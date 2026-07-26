@@ -1,0 +1,197 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+
+          # ── Windows x64 ──────────────────────────────────────────────────────
+          - os:       windows-latest
+            target:   x86_64-pc-windows-msvc
+            bin:      onas.exe
+            artifact: onas-windows-x64.exe
+            upx:      true
+
+          # ── Linux x64 ────────────────────────────────────────────────────────
+          - os:       ubuntu-22.04
+            target:   x86_64-unknown-linux-gnu
+            bin:      onas
+            artifact: onas-linux-x64
+            upx:      true
+
+          # ── macOS Apple Silicon ───────────────────────────────────────────────
+          - os:       macos-14
+            target:   aarch64-apple-darwin
+            bin:      onas
+            artifact: onas-macos-aarch64
+            upx:      false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Rust ─────────────────────────────────────────────────────────────────
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # ════════════════════════════════════════════════════════════════════════
+      #  WINDOWS
+      # ════════════════════════════════════════════════════════════════════════
+
+      # pkg-config CLI for Windows — required by x264/libde265/x265 build.rs
+      - name: Install pkgconfiglite (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install pkgconfiglite --yes
+
+      - name: Setup vcpkg (Windows)
+        if: runner.os == 'Windows'
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 'a34c873a9717a888f58dc05268dea15592c2f822'
+
+      - name: vcpkg install (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          vcpkg install `
+            libopus:x64-windows-static `
+            libflac:x64-windows-static `
+            fdk-aac:x64-windows-static `
+            dav1d:x64-windows-static `
+            libvpx:x64-windows-static `
+            x264:x64-windows-static `
+            libde265:x64-windows-static `
+            x265:x64-windows-static `
+            --triplet x64-windows-static
+
+      - name: Set vcpkg env (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installed = "$env:VCPKG_ROOT\installed\x64-windows-static"
+          echo "PKG_CONFIG_PATH=$installed\lib\pkgconfig" >> $env:GITHUB_ENV
+          echo "PKG_CONFIG_ALL_STATIC=1"                  >> $env:GITHUB_ENV
+          echo "VCPKGRS_TRIPLET=x64-windows-static"       >> $env:GITHUB_ENV
+          echo "VCPKG_ROOT=$env:VCPKG_ROOT"               >> $env:GITHUB_ENV
+
+      # ════════════════════════════════════════════════════════════════════════
+      #  LINUX
+      # ════════════════════════════════════════════════════════════════════════
+
+      - name: Install system libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo add-apt-repository universe -y
+          sudo apt-get update
+          sudo apt-get install -y \
+            libopus-dev \
+            libflac-dev \
+            libfdk-aac-dev \
+            libdav1d-dev \
+            libvpx-dev \
+            libx264-dev \
+            libde265-dev \
+            libx265-dev \
+            cmake \
+            nasm \
+            pkg-config
+
+      # ════════════════════════════════════════════════════════════════════════
+      #  macOS
+      # ════════════════════════════════════════════════════════════════════════
+
+      - name: Install system libraries (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install \
+            opus \
+            flac \
+            fdk-aac \
+            dav1d \
+            libvpx \
+            x264 \
+            libde265 \
+            x265 \
+            cmake \
+            nasm \
+            pkg-config
+
+      # ════════════════════════════════════════════════════════════════════════
+      #  BUILD
+      # ════════════════════════════════════════════════════════════════════════
+
+      - name: Build
+        env:
+          RUSTFLAGS: ${{ runner.os == 'Linux' && '-C target-feature=+crt-static' || '' }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # ── Package ───────────────────────────────────────────────────────────────
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path onas-win64 | Out-Null
+          Copy-Item target\${{ matrix.target }}\release\onas.exe onas-win64\
+          Compress-Archive -Path onas-win64\* -DestinationPath onas-windows-x64.zip
+
+      - name: Copy artifact (non-Windows)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: cp target/${{ matrix.target }}/release/${{ matrix.bin }} ${{ matrix.artifact }}
+
+      # ── UPX (Linux only) ──────────────────────────────────────────────────────
+      - name: Compress with UPX (Linux)
+        if: runner.os == 'Linux'
+        uses: crazy-max/ghaction-upx@v3
+        with:
+          version: latest
+          files:   ${{ matrix.artifact }}
+          args:    --best --lzma
+
+      # ── Upload CI artifact ────────────────────────────────────────────────────
+      - name: Upload CI artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: onas-windows-x64.zip
+          path: onas-windows-x64.zip
+
+      - name: Upload CI artifact (non-Windows)
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+      # ── Upload to GitHub Release (on tag push) ────────────────────────────────
+      - name: Upload to GitHub Release (Windows)
+        if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: onas-windows-x64.zip
+
+      - name: Upload to GitHub Release (non-Windows)
+        if: runner.os != 'Windows' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact }}

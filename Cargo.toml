@@ -35,6 +35,7 @@ dav1d      = "0.11"
 jxl-oxide  = "0.12"
 # JXL encode: cmake build of libjxl, works on all 3 platforms
 jpegxl-src = "0.12"
+jpegxl-rs  = { version = "0.11", features = ["vendored"] }
 
 # ── metadata ──────────────────────────────────────────────────────────────────
 # nom-exif 3.x: read-only for images; we use it for EXIF dump
@@ -44,6 +45,7 @@ lofty      = "0.24"
 
 # ── audio decode (pure Rust) ──────────────────────────────────────────────────
 symphonia  = { version = "0.6", features = ["all"] }
+webm-iterable = "0.6"
 
 # ── audio encode ──────────────────────────────────────────────────────────────
 # Opus: audiopus wraps libopus (vcpkg on Windows, apt on Linux, brew on macOS)
@@ -68,7 +70,7 @@ vpx        = { git = "https://github.com/DiamondLovesYou/rust-vpx", rev = "04df6
 # AV1 decode: dav1d (already in deps above for AVIF, shared)
 # AV1 encode: rav1e (pure Rust) — svt-av1-sys requires bindgen at build time
 #             which is complex on Windows CI; rav1e is the safe fallback
-rav1e      = "0.8"
+rav1e      = { version = "0.8", default-features = false, features = ["threading"] }
 # MKV demux + mux: pure Rust
 matroska   = "0.6"
 

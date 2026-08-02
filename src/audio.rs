@@ -79,7 +79,7 @@ pub fn decode(path: &Path) -> Result<Pcm> {
         io::MediaSourceStream,
         meta::MetadataOptions,
     };
-    use symphonia_core::formats::TrackType;
+    use symphonia::core::formats::TrackType;
 
     let file = std::fs::File::open(path)
         .with_context(|| format!("opening {}", path.display()))?;

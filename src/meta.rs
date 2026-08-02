@@ -27,31 +27,38 @@ fn classify(p: &Path) -> Result<Class> {
 // ─── image: dump EXIF ────────────────────────────────────────────────────────
 
 fn image_dump(path: &Path) -> Result<()> {
-    use nom_exif::{MediaParser, MediaSource, Exif};
+    use nom_exif::{MediaParser, MediaSource};
 
-    let ms = MediaSource::file_path(path)
+    let ms = MediaSource::open(path)
         .with_context(|| format!("opening {}", path.display()))?;
     let mut parser = MediaParser::new();
 
-    match parser.parse(ms) {
-        Ok(nom_exif::Metadata::Exif(exif)) => {
-            let iter = exif.iter();
+    let iter = parser.parse_exif(ms);
+    match iter {
+        Ok(exif_iter) => {
             let mut found = false;
-            for (tag, entry) in iter {
-                println!("{:?}\t{}", tag, entry);
+            for entry in exif_iter {
+                println!("{:?}\t{}", entry.tag(), entry.get_value().unwrap_or(&nom_exif::EntryValue::Text(String::new())));
                 found = true;
             }
             if !found {
                 println!("(no EXIF data)");
             }
         }
-        Ok(nom_exif::Metadata::Track(track)) => {
-            println!("Duration: {:?}", track.get(nom_exif::TrackInfoTag::Duration));
-            println!("Width:    {:?}", track.get(nom_exif::TrackInfoTag::ImageWidth));
-            println!("Height:   {:?}", track.get(nom_exif::TrackInfoTag::ImageHeight));
-        }
-        Err(e) => {
-            println!("(no metadata or unsupported format: {e})");
+        Err(_) => {
+            // Try as track/video metadata
+            let ms2 = MediaSource::open(path)
+                .with_context(|| format!("opening {}", path.display()))?;
+            match parser.parse_track(ms2) {
+                Ok(track) => {
+                    println!("Duration: {:?}", track.get(nom_exif::TrackInfoTag::DurationMs));
+                    println!("Width:    {:?}", track.get(nom_exif::TrackInfoTag::Width));
+                    println!("Height:   {:?}", track.get(nom_exif::TrackInfoTag::Height));
+                }
+                Err(e) => {
+                    println!("(no metadata or unsupported format: {e})");
+                }
+            }
         }
     }
     Ok(())
@@ -60,13 +67,12 @@ fn image_dump(path: &Path) -> Result<()> {
 // ─── image: write via lofty ──────────────────────────────────────────────────
 
 fn image_write(path: &Path, sets: &[String], removes: &[String], strip: bool) -> Result<()> {
-    // lofty supports JPEG and PNG tag writing (EXIF / XMP / iTXt chunks)
     use lofty::{
-        file::TaggedFileExt,
-        prelude::{AudioFile, TagExt},
-        probe::Probe,
-        tag::{Tag, TagType, ItemKey, ItemValue, TagItem},
         config::WriteOptions,
+        file::TaggedFileExt,
+        prelude::TagExt,
+        probe::Probe,
+        tag::{ItemKey, Tag},
     };
 
     let mut tagged = Probe::open(path)
@@ -77,15 +83,16 @@ fn image_write(path: &Path, sets: &[String], removes: &[String], strip: bool) ->
         .context("lofty read")?;
 
     if strip {
-        for tag in tagged.tags_mut() {
-            tag.clear();
+        for tag_type in tagged.tags().iter().map(|t| t.tag_type()).collect::<Vec<_>>() {
+            if let Some(t) = tagged.tag_mut(tag_type) {
+                t.clear();
+            }
         }
-        tagged.save().context("lofty save (strip)")?;
+        tagged.save_to_path(path, WriteOptions::default()).context("lofty save (strip)")?;
         println!("Stripped all metadata from {}", path.display());
         return Ok(());
     }
 
-    // Use first available tag, or create an ID3v2 one
     let tag_type = tagged.primary_tag_type();
     if tagged.primary_tag().is_none() {
         tagged.insert_tag(Tag::new(tag_type));
@@ -94,10 +101,9 @@ fn image_write(path: &Path, sets: &[String], removes: &[String], strip: bool) ->
     let tag = tagged.primary_tag_mut().unwrap();
 
     for r in removes {
-        // Try known ItemKey first, fall back to custom key removal
         match ItemKey::from_key(tag.tag_type(), r) {
-            Some(k) => { tag.remove_key(k); }
-            None    => { tag.remove_key(ItemKey::Unknown(r.to_owned())); }
+            Some(k) => { tag.remove_key(&k); }
+            None    => { tag.remove_key(&ItemKey::Unknown(r.to_owned())); }
         }
         println!("Removed: {r}");
     }
@@ -111,14 +117,14 @@ fn image_write(path: &Path, sets: &[String], removes: &[String], strip: bool) ->
         println!("Set: {k} = {v}");
     }
 
-    tagged.save().context("lofty save")?;
+    tagged.save_to_path(path, WriteOptions::default()).context("lofty save")?;
     Ok(())
 }
 
 // ─── audio: dump tags ────────────────────────────────────────────────────────
 
 fn audio_dump(path: &Path) -> Result<()> {
-    use lofty::{prelude::AudioFile, probe::Probe};
+    use lofty::{file::TaggedFileExt, prelude::AudioFile, probe::Probe};
 
     let tagged = Probe::open(path)
         .with_context(|| format!("opening {}", path.display()))?
@@ -127,22 +133,19 @@ fn audio_dump(path: &Path) -> Result<()> {
         .read()
         .context("read file")?;
 
-    // Print audio properties
-    if let Some(props) = tagged.properties() {
-        println!("=== Audio Properties ===");
-        println!("Duration:    {:.2}s", props.duration().as_secs_f64());
-        if let Some(br) = props.audio_bitrate() {
-            println!("Bitrate:     {} kbps", br);
-        }
-        if let Some(sr) = props.sample_rate() {
-            println!("Sample rate: {} Hz", sr);
-        }
-        if let Some(ch) = props.channels() {
-            println!("Channels:    {}", ch);
-        }
+    let props = tagged.properties();
+    println!("=== Audio Properties ===");
+    println!("Duration:    {:.2}s", props.duration().as_secs_f64());
+    if let Some(br) = props.audio_bitrate() {
+        println!("Bitrate:     {} kbps", br);
+    }
+    if let Some(sr) = props.sample_rate() {
+        println!("Sample rate: {} Hz", sr);
+    }
+    if let Some(ch) = props.channels() {
+        println!("Channels:    {}", ch);
     }
 
-    // Print all tags
     if tagged.tags().is_empty() {
         println!("(no tags)");
     }
@@ -159,10 +162,11 @@ fn audio_dump(path: &Path) -> Result<()> {
 
 fn audio_write(path: &Path, sets: &[String], removes: &[String], strip: bool) -> Result<()> {
     use lofty::{
+        config::WriteOptions,
         file::TaggedFileExt,
-        prelude::{AudioFile, TagExt},
+        prelude::TagExt,
         probe::Probe,
-        tag::{Tag, ItemKey, ItemValue, TagItem},
+        tag::{ItemKey, Tag},
     };
 
     let mut tagged = Probe::open(path)
@@ -173,10 +177,12 @@ fn audio_write(path: &Path, sets: &[String], removes: &[String], strip: bool) ->
         .context("read file")?;
 
     if strip {
-        for tag in tagged.tags_mut() {
-            tag.clear();
+        for tag_type in tagged.tags().iter().map(|t| t.tag_type()).collect::<Vec<_>>() {
+            if let Some(t) = tagged.tag_mut(tag_type) {
+                t.clear();
+            }
         }
-        tagged.save().context("save (strip)")?;
+        tagged.save_to_path(path, WriteOptions::default()).context("save (strip)")?;
         println!("Stripped all tags from {}", path.display());
         return Ok(());
     }
@@ -190,8 +196,8 @@ fn audio_write(path: &Path, sets: &[String], removes: &[String], strip: bool) ->
 
     for r in removes {
         match ItemKey::from_key(tag.tag_type(), r) {
-            Some(k) => { tag.remove_key(k); }
-            None    => { tag.remove_key(ItemKey::Unknown(r.to_owned())); }
+            Some(k) => { tag.remove_key(&k); }
+            None    => { tag.remove_key(&ItemKey::Unknown(r.to_owned())); }
         }
         println!("Removed: {r}");
     }
@@ -205,7 +211,7 @@ fn audio_write(path: &Path, sets: &[String], removes: &[String], strip: bool) ->
         println!("Set: {k} = {v}");
     }
 
-    tagged.save().context("save")?;
+    tagged.save_to_path(path, WriteOptions::default()).context("save")?;
     Ok(())
 }
 
@@ -214,7 +220,6 @@ fn audio_write(path: &Path, sets: &[String], removes: &[String], strip: bool) ->
 pub fn run(args: MetaArgs) -> Result<()> {
     let class = classify(&args.file)?;
 
-    // Validate mutually exclusive write flags
     if args.strip && (!args.set.is_empty() || !args.remove.is_empty()) {
         bail!("--strip cannot be combined with --set or --remove");
     }

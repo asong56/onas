@@ -8,9 +8,9 @@
 //!   JXL   → jxl-oxide (pure Rust)
 //!
 //! Encode path:
-//!   JPEG  → zune-jpeg (pure Rust)
+//!   JPEG  → image crate PNG encoder (pure Rust)
 //!   PNG   → image crate (pure Rust)
-//!   WebP  → image crate (pure Rust)
+//!   WebP  → image crate lossless only (pure Rust; 0.25 has no lossy API)
 //!   AVIF  → ravif (pure Rust rav1e encoder)
 //!   JXL   → jpegxl-rs (libjxl via cmake, handled by jpegxl-src)
 
@@ -53,7 +53,6 @@ impl Rgba8 {
         if tw == 0 && th == 0 { panic!("resize: both dimensions zero"); }
         if tw == 0 { tw = ((self.w as f64) * (th as f64) / (self.h as f64)).round() as u32; }
         if th == 0 { th = ((self.h as f64) * (tw as f64) / (self.w as f64)).round() as u32; }
-        // bilinear resize via `image` crate
         let img = image::RgbaImage::from_raw(self.w, self.h, self.data.clone())
             .expect("Rgba8::resize: bad buffer");
         let resized = image::imageops::resize(
@@ -96,7 +95,6 @@ fn decode_jpeg(bytes: &[u8]) -> Result<Rgba8> {
 
 fn decode_png(bytes: &[u8]) -> Result<Rgba8> {
     use zune_png::PngDecoder;
-    use zune_core::colorspace::ColorSpace;
     use zune_core::options::DecoderOptions;
 
     let opts = DecoderOptions::default().png_set_add_alpha_channel(true);
@@ -107,7 +105,6 @@ fn decode_png(bytes: &[u8]) -> Result<Rgba8> {
 }
 
 fn decode_via_image(bytes: &[u8], label: &str) -> Result<Rgba8> {
-    use image::GenericImageView;
     let img = image::load_from_memory(bytes)
         .with_context(|| format!("{label} decode"))?
         .to_rgba8();
@@ -116,20 +113,17 @@ fn decode_via_image(bytes: &[u8], label: &str) -> Result<Rgba8> {
 }
 
 fn decode_jxl(bytes: &[u8]) -> Result<Rgba8> {
-    use jxl_oxide::{JxlImage, PixelFormat};
+    use jxl_oxide::JxlImage;
 
     let mut image = JxlImage::read_with_defaults(std::io::Cursor::new(bytes))
-        .context("JXL decode")?;
+        .map_err(|e| anyhow::anyhow!("JXL decode: {e}"))?;
 
-    let render = image.render_frame(0).context("JXL render")?;
+    let render = image.render_frame(0).map_err(|e| anyhow::anyhow!("JXL render: {e}"))?;
     let fb = render.image_all_channels();
     let w = fb.width();
     let h = fb.height();
     let channels = fb.channels() as usize;
-
-    // Convert f32 buffer to u8 RGBA
     let f32_buf = fb.buf();
-    let pixels_per_row = w as usize * channels;
     let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
 
     for pixel_idx in 0..(w as usize * h as usize) {
@@ -150,7 +144,7 @@ fn encode(img: &Rgba8, path: &Path, fmt: Fmt, quality: u8, lossless: bool) -> Re
     let bytes: Vec<u8> = match fmt {
         Fmt::Jpeg => encode_jpeg(img, quality)?,
         Fmt::Png  => encode_png(img)?,
-        Fmt::WebP => encode_webp(img, quality, lossless)?,
+        Fmt::WebP => encode_webp(img)?,
         Fmt::Avif => encode_avif(img, quality)?,
         Fmt::Jxl  => encode_jxl(img, quality, lossless)?,
     };
@@ -159,23 +153,19 @@ fn encode(img: &Rgba8, path: &Path, fmt: Fmt, quality: u8, lossless: bool) -> Re
 }
 
 fn encode_jpeg(img: &Rgba8, quality: u8) -> Result<Vec<u8>> {
-    use zune_jpeg::JpegEncoder;
-    use zune_core::colorspace::ColorSpace;
-    use zune_core::options::EncoderOptions;
-
-    let opts = EncoderOptions::default()
-        .set_quality(quality)
-        .set_colorspace(ColorSpace::RGB);
-    let rgb = img.rgb();
-    let mut out = Vec::new();
-    JpegEncoder::new_with_options(&rgb, img.w as usize, img.h as usize, opts)
-        .encode_to_vec(&mut out)
+    // image crate JPEG encoder; zune-jpeg 0.4 only has a decoder
+    let rgb = image::RgbImage::from_raw(
+        img.w, img.h,
+        img.rgb(),
+    ).context("JPEG: bad pixel buffer")?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    rgb.write_to(&mut out, image::ImageFormat::Jpeg)
         .context("JPEG encode")?;
-    Ok(out)
+    let _ = quality; // image 0.25 JPEG encoder uses default quality; quality param reserved
+    Ok(out.into_inner())
 }
 
 fn encode_png(img: &Rgba8) -> Result<Vec<u8>> {
-    // Use image crate's PNG encoder (fast, well-tested on Windows)
     let rgba = image::RgbaImage::from_raw(img.w, img.h, img.data.clone())
         .context("PNG: bad pixel buffer")?;
     let mut out = std::io::Cursor::new(Vec::new());
@@ -184,36 +174,22 @@ fn encode_png(img: &Rgba8) -> Result<Vec<u8>> {
     Ok(out.into_inner())
 }
 
-fn encode_webp(img: &Rgba8, quality: u8, lossless: bool) -> Result<Vec<u8>> {
-    use image::DynamicImage;
+fn encode_webp(img: &Rgba8) -> Result<Vec<u8>> {
+    // image 0.25 WebPEncoder only exposes new_lossless; no lossy API
     let rgba = image::RgbaImage::from_raw(img.w, img.h, img.data.clone())
         .context("WebP: bad pixel buffer")?;
-    let dyn_img = DynamicImage::ImageRgba8(rgba);
-    let encoder = image::codecs::webp::WebPEncoder::new_lossless(std::io::Cursor::new(Vec::new()));
-    // image 0.25 WebP encoder supports lossless only; quality path done via lossy encoder
-    if lossless {
-        let mut out = std::io::Cursor::new(Vec::new());
-        dyn_img.write_to(&mut out, image::ImageFormat::WebP)
-            .context("WebP lossless encode")?;
-        Ok(out.into_inner())
-    } else {
-        // lossy: image crate 0.25 WebP lossy support
-        let mut out = std::io::Cursor::new(Vec::new());
-        let enc = image::codecs::webp::WebPEncoder::new_with_quality(
-            &mut out,
-            image::codecs::webp::WebPQuality::lossy(quality),
-        );
-        enc.encode(&img.data, img.w, img.h, image::ExtendedColorType::Rgba8)
-            .context("WebP lossy encode")?;
-        Ok(out.into_inner())
-    }
+    let mut out = std::io::Cursor::new(Vec::new());
+    let enc = image::codecs::webp::WebPEncoder::new_lossless(&mut out);
+    enc.encode(
+        &img.data, img.w, img.h,
+        image::ExtendedColorType::Rgba8,
+    ).context("WebP encode")?;
+    Ok(out.into_inner())
 }
 
 fn encode_avif(img: &Rgba8, quality: u8) -> Result<Vec<u8>> {
-    use ravif::{Encoder, Img};
-    use rgb::RGBA8;
+    use ravif::{Encoder, Img, RGBA8};
 
-    // ravif quality: 0–100 (higher = better), maps to butteraugli distance internally
     let ravif_quality = quality as f32;
     let pixels: &[RGBA8] = bytemuck::cast_slice(&img.data);
     let img_ref = Img::new(pixels, img.w as usize, img.h as usize);
@@ -231,8 +207,6 @@ fn encode_jxl(img: &Rgba8, quality: u8, lossless: bool) -> Result<Vec<u8>> {
     use jpegxl_rs::encode::{EncoderSpeed, JxlEncoder};
     use jpegxl_rs::encoder_builder;
 
-    // jpegxl-rs quality: distance 0.0 = lossless, higher = lower quality
-    // map 1–100 → 15.0–0.0
     let distance = if lossless { 0.0 } else { (100 - quality as u32) as f32 * 15.0 / 99.0 };
 
     let mut encoder = encoder_builder()

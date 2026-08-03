@@ -9,8 +9,7 @@
 
 #![allow(non_camel_case_types, non_snake_case, non_upper_case_globals, dead_code)]
 
-use std::ffi::{c_char, c_double, c_float, c_int, c_uint, c_void};
-use std::os::raw::c_ulonglong;
+use std::ffi::{c_char, c_double, c_int, c_void};
 
 // ─── opaque types ────────────────────────────────────────────────────────────
 
@@ -142,9 +141,11 @@ extern "C" {
 
     // ── encoder ───────────────────────────────────────────────────────────────
 
-    /// Open an encoder; copies all parameters.
-    /// Returns NULL on failure.
-    pub fn x265_encoder_open(param: *mut x265_param) -> *mut x265_encoder;
+    // NOTE: x265_encoder_open is declared further down as a Rust wrapper,
+    // not here. Modern libx265 exports it only under a version-suffixed
+    // symbol name (e.g. x265_encoder_open_215) via a C preprocessor glue
+    // macro in x265.h — linking against the bare, unversioned name fails
+    // with "undefined reference". See the wrapper below.
 
     /// Write SPS/PPS/VPS headers into *pp_nal.
     /// Returns total byte size of payload, negative on error.
@@ -221,3 +222,94 @@ impl Default for x265_stats {
 
 pub const X265_PARAM_BAD_NAME:  c_int = -1;
 pub const X265_PARAM_BAD_VALUE: c_int = -2;
+
+// ─── versioned encoder_open, reached via x265_api_query ───────────────────────
+//
+// Modern libx265 renames x265_encoder_open to x265_encoder_open_<X265_BUILD>
+// via a preprocessor glue macro (see x265.h), so C callers get the right
+// symbol automatically at compile time, but a hand-written extern "C"
+// declaration of the bare name links against a symbol that doesn't exist
+// in the compiled library. libx265 documents exactly one stable,
+// unversioned entry point for exactly this situation: x265_api_query(),
+// which returns a table of function pointers (including encoder_open)
+// after checking ABI compatibility internally — the same mechanism x265's
+// own header points external / dlopen-style consumers at.
+//
+// api_build_number: /* X265_BUILD (soname) */
+//
+// Only the fields through `encoder_open` are declared: x265_api is never
+// allocated or copied by value here, only read through the `*const x265_api`
+// libx265 itself returns, and nothing past encoder_open is used.
+#[repr(C)]
+pub struct x265_api {
+    pub api_major_version: c_int,
+    pub api_build_number:  c_int,
+    pub sizeof_param:          c_int,
+    pub sizeof_picture:        c_int,
+    pub sizeof_analysis_data:  c_int,
+    pub sizeof_zone:           c_int,
+    pub sizeof_stats:          c_int,
+    pub bit_depth:      c_int,
+    pub version_str:    *const c_char,
+    pub build_info_str: *const c_char,
+    pub param_alloc:   Option<unsafe extern "C" fn() -> *mut x265_param>,
+    pub param_free:    Option<unsafe extern "C" fn(*mut x265_param)>,
+    pub param_default: Option<unsafe extern "C" fn(*mut x265_param)>,
+    pub param_parse:   Option<unsafe extern "C" fn(*mut x265_param, *const c_char, *const c_char) -> c_int>,
+    pub scenecut_aware_qp_param_parse:
+                       Option<unsafe extern "C" fn(*mut x265_param, *const c_char, *const c_char) -> c_int>,
+    pub param_apply_profile:  Option<unsafe extern "C" fn(*mut x265_param, *const c_char) -> c_int>,
+    pub param_default_preset: Option<unsafe extern "C" fn(*mut x265_param, *const c_char, *const c_char) -> c_int>,
+    pub picture_alloc: Option<unsafe extern "C" fn() -> *mut x265_picture>,
+    pub picture_free:  Option<unsafe extern "C" fn(*mut x265_picture)>,
+    pub picture_init:  Option<unsafe extern "C" fn(*mut x265_param, *mut x265_picture)>,
+    pub encoder_open:  Option<unsafe extern "C" fn(*mut x265_param) -> *mut x265_encoder>,
+}
+
+#[link(name = "x265")]
+extern "C" {
+    /// Retrieve the programming interface for the linked x265 library.
+    /// Stable, unversioned symbol — unlike x265_api_get/x265_encoder_open,
+    /// this one is not renamed via the X265_BUILD glue macro, which is the
+    /// whole point: it exists so external tools that can't run the C
+    /// preprocessor over x265.h (like us) have a fixed name to link
+    /// against. bitDepth=0 always returns non-NULL from the linked
+    /// library. err receives one of the X265_API_QUERY_ERR_* codes.
+    pub fn x265_api_query(bit_depth: c_int, api_version: c_int, err: *mut c_int) -> *const x265_api;
+}
+
+extern "C" {
+    /// Build-time probe (src/x265_build_probe.c): returns X265_BUILD from
+    /// whichever x265_config.h is actually being linked against.
+    fn onas_x265_build_number() -> c_int;
+}
+
+pub const X265_API_QUERY_ERR_NONE:           c_int = 0;
+pub const X265_API_QUERY_ERR_VER_REFUSED:    c_int = 1;
+pub const X265_API_QUERY_ERR_LIB_NOT_FOUND:  c_int = 2;
+pub const X265_API_QUERY_ERR_FUNC_NOT_FOUND: c_int = 3;
+pub const X265_API_QUERY_ERR_WRONG_BITDEPTH: c_int = 4;
+
+/// Open an encoder; copies all parameters. Returns NULL on failure.
+///
+/// Same name and signature as libx265's own `x265_encoder_open` so callers
+/// use it exactly like any other function in this crate — internally it
+/// goes through `x265_api_query()` to reach the real, version-suffixed
+/// symbol instead of linking a name that doesn't exist in the compiled
+/// library (see the comment above `x265_api` for why).
+///
+/// # Safety
+/// `param` must be a valid pointer from `x265_param_alloc()`, as with any
+/// other function in this crate.
+pub unsafe fn x265_encoder_open(param: *mut x265_param) -> *mut x265_encoder {
+    let build = onas_x265_build_number();
+    let mut err: c_int = 0;
+    let api = x265_api_query(8, build, &mut err);
+    if api.is_null() {
+        return std::ptr::null_mut();
+    }
+    match (*api).encoder_open {
+        Some(f) => f(param),
+        None    => std::ptr::null_mut(),
+    }
+}

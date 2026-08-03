@@ -115,13 +115,13 @@ fn decode_via_image(bytes: &[u8], label: &str) -> Result<Rgba8> {
 fn decode_jxl(bytes: &[u8]) -> Result<Rgba8> {
     use jxl_oxide::JxlImage;
 
-    let mut image = JxlImage::read_with_defaults(std::io::Cursor::new(bytes))
+    let image = JxlImage::read_with_defaults(std::io::Cursor::new(bytes))
         .map_err(|e| anyhow::anyhow!("JXL decode: {e}"))?;
 
     let render = image.render_frame(0).map_err(|e| anyhow::anyhow!("JXL render: {e}"))?;
     let fb = render.image_all_channels();
-    let w = fb.width();
-    let h = fb.height();
+    let w = fb.width() as u32;
+    let h = fb.height() as u32;
     let channels = fb.channels() as usize;
     let f32_buf = fb.buf();
     let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
@@ -176,7 +176,10 @@ fn encode_png(img: &Rgba8) -> Result<Vec<u8>> {
 
 fn encode_webp(img: &Rgba8) -> Result<Vec<u8>> {
     // image 0.25 WebPEncoder only exposes new_lossless; no lossy API
-    let rgba = image::RgbaImage::from_raw(img.w, img.h, img.data.clone())
+    // Validate the buffer matches the declared dimensions before handing
+    // raw bytes to the encoder below (from_raw fails on a size mismatch,
+    // giving a clearer error than the encoder would).
+    let _rgba = image::RgbaImage::from_raw(img.w, img.h, img.data.clone())
         .context("WebP: bad pixel buffer")?;
     let mut out = std::io::Cursor::new(Vec::new());
     let enc = image::codecs::webp::WebPEncoder::new_lossless(&mut out);
@@ -191,8 +194,16 @@ fn encode_avif(img: &Rgba8, quality: u8) -> Result<Vec<u8>> {
     use ravif::{Encoder, Img, RGBA8};
 
     let ravif_quality = quality as f32;
-    let pixels: &[RGBA8] = bytemuck::cast_slice(&img.data);
-    let img_ref = Img::new(pixels, img.w as usize, img.h as usize);
+    // RGBA8 (rgb::Rgba<u8>) isn't bytemuck::Pod, so it can't be reinterpreted
+    // from raw bytes via cast_slice — build it pixel-by-pixel instead. Its
+    // r/g/b/a fields are public and this layout matches our interleaved
+    // RGBA buffer exactly, so this is just a struct-literal copy, not a
+    // format conversion.
+    let pixels: Vec<RGBA8> = img.data
+        .chunks_exact(4)
+        .map(|p| RGBA8 { r: p[0], g: p[1], b: p[2], a: p[3] })
+        .collect();
+    let img_ref = Img::new(pixels.as_slice(), img.w as usize, img.h as usize);
 
     let encoded = Encoder::new()
         .with_quality(ravif_quality)
@@ -204,14 +215,14 @@ fn encode_avif(img: &Rgba8, quality: u8) -> Result<Vec<u8>> {
 }
 
 fn encode_jxl(img: &Rgba8, quality: u8, lossless: bool) -> Result<Vec<u8>> {
-    use jpegxl_rs::encode::{EncoderSpeed, JxlEncoder};
+    use jpegxl_rs::encode::EncoderSpeed;
     use jpegxl_rs::encoder_builder;
 
     let distance = if lossless { 0.0 } else { (100 - quality as u32) as f32 * 15.0 / 99.0 };
 
     let mut encoder = encoder_builder()
         .has_alpha(true)
-        .lossless(Some(lossless))
+        .lossless(lossless)
         .speed(EncoderSpeed::Squirrel)
         .quality(distance)
         .build()

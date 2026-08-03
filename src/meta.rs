@@ -38,7 +38,7 @@ fn image_dump(path: &Path) -> Result<()> {
         Ok(exif_iter) => {
             let mut found = false;
             for entry in exif_iter {
-                println!("{:?}\t{}", entry.tag(), entry.get_value().unwrap_or(&nom_exif::EntryValue::Text(String::new())));
+                println!("{:?}\t{}", entry.tag(), entry.value().unwrap_or(&nom_exif::EntryValue::Text(String::new())));
                 found = true;
             }
             if !found {
@@ -69,7 +69,7 @@ fn image_dump(path: &Path) -> Result<()> {
 fn image_write(path: &Path, sets: &[String], removes: &[String], strip: bool) -> Result<()> {
     use lofty::{
         config::WriteOptions,
-        file::TaggedFileExt,
+        file::{AudioFile, TaggedFileExt},
         prelude::TagExt,
         probe::Probe,
         tag::{ItemKey, Tag},
@@ -101,18 +101,24 @@ fn image_write(path: &Path, sets: &[String], removes: &[String], strip: bool) ->
     let tag = tagged.primary_tag_mut().unwrap();
 
     for r in removes {
+        // lofty 0.24's ItemKey is a closed (non-exhaustive but fixed) set of
+        // well-known keys — there's no catch-all variant for arbitrary
+        // strings, so a key this tag format doesn't recognize simply can't
+        // be removed by key. Skip it rather than silently pretending it
+        // worked.
         match ItemKey::from_key(tag.tag_type(), r) {
-            Some(k) => { tag.remove_key(&k); }
-            None    => { tag.remove_key(&ItemKey::Unknown(r.to_owned())); }
+            Some(k) => { tag.remove_key(k); println!("Removed: {r}"); }
+            None    => println!("Skipped '{r}': not a recognized key for {:?}", tag.tag_type()),
         }
-        println!("Removed: {r}");
     }
 
     for kv in sets {
         let (k, v) = kv.split_once('=')
             .with_context(|| format!("--set value must be KEY=VALUE, got: {kv}"))?;
         let item_key = ItemKey::from_key(tag.tag_type(), k)
-            .unwrap_or_else(|| ItemKey::Unknown(k.to_owned()));
+            .with_context(|| format!(
+                "'{k}' is not a recognized metadata key for {:?}", tag.tag_type()
+            ))?;
         tag.insert_text(item_key, v.to_owned());
         println!("Set: {k} = {v}");
     }
@@ -163,7 +169,7 @@ fn audio_dump(path: &Path) -> Result<()> {
 fn audio_write(path: &Path, sets: &[String], removes: &[String], strip: bool) -> Result<()> {
     use lofty::{
         config::WriteOptions,
-        file::TaggedFileExt,
+        file::{AudioFile, TaggedFileExt},
         prelude::TagExt,
         probe::Probe,
         tag::{ItemKey, Tag},
@@ -195,18 +201,21 @@ fn audio_write(path: &Path, sets: &[String], removes: &[String], strip: bool) ->
     let tag = tagged.primary_tag_mut().unwrap();
 
     for r in removes {
+        // See image_write: lofty 0.24's ItemKey has no catch-all variant,
+        // so a key this tag format doesn't recognize can't be targeted.
         match ItemKey::from_key(tag.tag_type(), r) {
-            Some(k) => { tag.remove_key(&k); }
-            None    => { tag.remove_key(&ItemKey::Unknown(r.to_owned())); }
+            Some(k) => { tag.remove_key(k); println!("Removed: {r}"); }
+            None    => println!("Skipped '{r}': not a recognized key for {:?}", tag.tag_type()),
         }
-        println!("Removed: {r}");
     }
 
     for kv in sets {
         let (k, v) = kv.split_once('=')
             .with_context(|| format!("--set must be KEY=VALUE, got: {kv}"))?;
         let item_key = ItemKey::from_key(tag.tag_type(), k)
-            .unwrap_or_else(|| ItemKey::Unknown(k.to_owned()));
+            .with_context(|| format!(
+                "'{k}' is not a recognized metadata key for {:?}", tag.tag_type()
+            ))?;
         tag.insert_text(item_key, v.to_owned());
         println!("Set: {k} = {v}");
     }

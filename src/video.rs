@@ -176,7 +176,7 @@ mod dec_h265 {
         }
 
         pub fn decode(&mut self, data: &[u8], pts: i64) -> Result<Vec<YuvFrame>> {
-            self.dec.push_data(data).map_err(|e| anyhow::anyhow!("de265 push: {:?}", e))?;
+            self.dec.push_data(data, pts, None).map_err(|e| anyhow::anyhow!("de265 push: {:?}", e))?;
             self.dec.push_end_of_nal();
             self.dec.decode().map_err(|e| anyhow::anyhow!("de265 decode: {:?}", e))?;
             Ok(self.drain(pts))
@@ -222,6 +222,15 @@ mod dec_vp9 {
     use vpx_sys as ffi;
     use std::ptr;
 
+    // Provided by build.rs / src/vpx_abi_probe.c: VPX_DECODER_ABI_VERSION is
+    // preprocessor arithmetic in vpx_decoder.h, so it isn't captured in the
+    // pre-generated vpx_sys bindings. We recover the real value at build time
+    // from whichever libvpx headers are actually linked, rather than
+    // hardcoding a number that would go stale across libvpx versions.
+    extern "C" {
+        fn onas_vpx_decoder_abi_version() -> i32;
+    }
+
     pub struct Vp9Dec {
         ctx: ffi::vpx_codec_ctx_t,
     }
@@ -230,13 +239,14 @@ mod dec_vp9 {
     impl Vp9Dec {
         pub fn new() -> Result<Self> {
             let mut ctx: ffi::vpx_codec_ctx_t = Default::default();
+            let abi = unsafe { onas_vpx_decoder_abi_version() };
             let err = unsafe {
                 ffi::vpx_codec_dec_init_ver(
                     &mut ctx,
-                    &mut ffi::vpx_codec_vp9_dx_algo as *mut _,
+                    &raw mut ffi::vpx_codec_vp9_dx_algo as *mut _,
                     ptr::null(),
                     0,
-                    ffi::VPX_DECODER_ABI_VERSION as i32,
+                    abi,
                 )
             };
             if err != 0 {
@@ -358,7 +368,7 @@ mod dec_av1 {
 
 mod enc_h264 {
     use super::YuvFrame;
-    use anyhow::Result;
+    use anyhow::{Context, Result};
     use x264::{Colorspace, Encoder, Image, Plane, Preset, Setup, Tune};
 
     pub struct H264Enc {
@@ -400,16 +410,20 @@ mod enc_h264 {
         }
 
         pub fn flush(&mut self) -> Vec<Vec<u8>> {
-            // x264::Encoder::flush() consumes self; take ownership and drain
+            // x264::Encoder::flush() consumes self; take ownership and drain.
+            // x264::Flush only has an inherent `.next()` method, not the
+            // Iterator trait, so it needs an explicit loop.
+            let mut out = Vec::new();
             if let Some(enc) = self.enc.take() {
-                enc.flush()
-                    .filter_map(|r| r.ok())
-                    .map(|(data, _)| data.entirety().to_vec())
-                    .filter(|v| !v.is_empty())
-                    .collect()
-            } else {
-                Vec::new()
+                let mut flush = enc.flush();
+                while let Some(result) = flush.next() {
+                    if let Ok((data, _)) = result {
+                        let bytes = data.entirety().to_vec();
+                        if !bytes.is_empty() { out.push(bytes); }
+                    }
+                }
             }
+            out
         }
     }
 
@@ -643,7 +657,6 @@ mod enc_av1 {
         }
 
         pub fn encode(&mut self, frame: &YuvFrame) -> Result<Option<Vec<u8>>> {
-            use rav1e::prelude::*;
             let mut f = self.ctx.new_frame();
             let copy_plane = |plane: &mut rav1e::Frame<u8>, p: usize, src: &[u8], w: usize, h: usize| {
                 let stride = plane.planes[p].cfg.stride;
@@ -692,7 +705,6 @@ mod pipeline {
         WebmIterator, WebmWriter,
         matroska_spec::{MatroskaSpec, SimpleBlock, Master},
     };
-    use ebml_iterable::specs::Master as EbmlMaster;
 
     enum VEnc {
         H264(enc_h264::H264Enc),
@@ -739,7 +751,7 @@ mod pipeline {
         };
 
         let fps_num = vt.default_duration
-            .map(|ns| ((1_000_000_000_000u64 / ns) as u32))
+            .map(|d| (1_000_000_000_000u128 / d.as_nanos().max(1)) as u32)
             .unwrap_or(30);
 
         Ok(TrackInfo {
@@ -821,6 +833,22 @@ mod pipeline {
                 enc_av1::Av1Enc::new(dst_w, dst_h, args.crf, 6)
                     .context("AV1 encoder")?
             )),
+        };
+
+        // MKV players need SPS/PPS (H.264) or VPS/SPS/PPS (H.265) declared
+        // out-of-band via CodecPrivate, even though libx264/libx265 also
+        // repeat them inline before each keyframe — several strict players
+        // and muxers won't probe the bitstream for it. Grab it right after
+        // the encoder opens; both encoders can return it before any frame
+        // is submitted.
+        let codec_private: Option<Vec<u8>> = if let Some(enc) = v_enc.as_mut() {
+            match enc {
+                VEnc::H264(e) => Some(e.headers().context("H.264 headers")?),
+                VEnc::H265(e) => Some(e.headers().context("H.265 headers")?),
+                VEnc::Vp9(_) | VEnc::Av1(_) => None,
+            }
+        } else {
+            None
         };
 
         // Collected encoded packets: (pts_ms, data, keyframe)
@@ -916,7 +944,7 @@ mod pipeline {
             VideoAudioCodec::Flac => "A_FLAC",
         };
 
-        write_mkv(&args, &v_pkts, &a_pkts, sub_bytes.as_deref(),
+        write_mkv(&args, &v_pkts, &a_pkts, sub_bytes.as_deref(), codec_private.as_deref(),
             info.v_track, info.a_track,
             dst_w, dst_h, v_codec_id, a_codec_id)?;
 
@@ -936,15 +964,16 @@ mod pipeline {
     }
 
     fn write_mkv(
-        args:        &VideoArgs,
-        v_pkts:      &[(i64, Vec<u8>, bool)],
-        a_pkts:      &[(i64, Vec<u8>)],
-        sub_ass:     Option<&[u8]>,
-        v_track_num: u64,
-        a_track_num: Option<u64>,
+        args:          &VideoArgs,
+        v_pkts:        &[(i64, Vec<u8>, bool)],
+        a_pkts:        &[(i64, Vec<u8>)],
+        sub_ass:       Option<&[u8]>,
+        codec_private: Option<&[u8]>,
+        v_track_num:   u64,
+        a_track_num:   Option<u64>,
         dst_w: u32, dst_h: u32,
-        v_codec_id:  &str,
-        a_codec_id:  &str,
+        v_codec_id:    &str,
+        a_codec_id:    &str,
     ) -> Result<()> {
         let dest = std::fs::File::create(&args.output)
             .with_context(|| format!("creating {}", args.output.display()))?;
@@ -977,9 +1006,12 @@ mod pipeline {
         // Video track
         writer.write(&MatroskaSpec::TrackEntry(Master::Start)).ok();
         writer.write(&MatroskaSpec::TrackNumber(v_track_num)).ok();
-        writer.write(&MatroskaSpec::TrackUid(v_track_num)).ok();
+        writer.write(&MatroskaSpec::TrackUID(v_track_num)).ok();
         writer.write(&MatroskaSpec::TrackType(1)).ok(); // 1=video
-        writer.write(&MatroskaSpec::CodecId(v_codec_id.to_owned())).ok();
+        writer.write(&MatroskaSpec::CodecID(v_codec_id.to_owned())).ok();
+        if let Some(cp) = codec_private {
+            writer.write(&MatroskaSpec::CodecPrivate(cp.to_vec())).ok();
+        }
         writer.write(&MatroskaSpec::Video(Master::Start)).ok();
         writer.write(&MatroskaSpec::PixelWidth(dst_w as u64)).ok();
         writer.write(&MatroskaSpec::PixelHeight(dst_h as u64)).ok();
@@ -991,9 +1023,9 @@ mod pipeline {
             if !a_pkts.is_empty() {
                 writer.write(&MatroskaSpec::TrackEntry(Master::Start)).ok();
                 writer.write(&MatroskaSpec::TrackNumber(atn)).ok();
-                writer.write(&MatroskaSpec::TrackUid(atn)).ok();
+                writer.write(&MatroskaSpec::TrackUID(atn)).ok();
                 writer.write(&MatroskaSpec::TrackType(2)).ok(); // 2=audio
-                writer.write(&MatroskaSpec::CodecId(a_codec_id.to_owned())).ok();
+                writer.write(&MatroskaSpec::CodecID(a_codec_id.to_owned())).ok();
                 writer.write(&MatroskaSpec::TrackEntry(Master::End)).ok();
             }
         }
@@ -1003,9 +1035,9 @@ mod pipeline {
         if sub_ass.is_some() {
             writer.write(&MatroskaSpec::TrackEntry(Master::Start)).ok();
             writer.write(&MatroskaSpec::TrackNumber(sub_track_num)).ok();
-            writer.write(&MatroskaSpec::TrackUid(sub_track_num)).ok();
+            writer.write(&MatroskaSpec::TrackUID(sub_track_num)).ok();
             writer.write(&MatroskaSpec::TrackType(17)).ok(); // 17=subtitle
-            writer.write(&MatroskaSpec::CodecId("S_TEXT/ASS".to_owned())).ok();
+            writer.write(&MatroskaSpec::CodecID("S_TEXT/ASS".to_owned())).ok();
             writer.write(&MatroskaSpec::TrackEntry(Master::End)).ok();
         }
 

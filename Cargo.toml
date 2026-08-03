@@ -8,10 +8,15 @@ version     = "0.2.0"
 edition     = "2021"
 description = "Image conversion, audio transcoding, and video transcoding CLI"
 license     = "MIT"
+build       = "build.rs"
 
 [[bin]]
 name = "onas"
 path = "src/main.rs"
+
+[build-dependencies]
+cc         = "1"
+pkg-config = "0.3"
 
 [dependencies]
 clap       = { version = "4", features = ["derive"] }
@@ -25,8 +30,7 @@ zune-jpeg  = "0.4"
 zune-png   = "0.4"
 zune-core  = "0.4"
 # image 0.25 handles WebP decode/encode and AVIF decode via dav1d
-image      = { version = "0.25", default-features = false,
-               features = ["jpeg", "png", "webp", "avif"] }
+image      = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "avif"] }
 # AVIF encode: pure Rust (uses rav1e internally)
 ravif      = "0.13"
 # AVIF decode + AV1: dav1d C library (vcpkg on Windows)
@@ -67,6 +71,7 @@ libde265   = "0.2"
 x265-sys   = { path = "x265-sys" }
 # VP9: pin to 04df690 — removes #![feature(cstr_to_str)], avoids missing ffi::VPX_ENCODER_ABI_VERSION in abb717b
 vpx        = { git = "https://github.com/DiamondLovesYou/rust-vpx", rev = "04df690" }
+vpx-sys    = { git = "https://github.com/DiamondLovesYou/rust-vpx", rev = "04df690", package = "libvpx-sys" }
 # AV1 decode: dav1d (already in deps above for AVIF, shared)
 # AV1 encode: rav1e (pure Rust) — svt-av1-sys requires bindgen at build time
 #             which is complex on Windows CI; rav1e is the safe fallback

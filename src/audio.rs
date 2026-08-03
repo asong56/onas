@@ -71,7 +71,7 @@ impl Pcm {
 
 // ─── decode ──────────────────────────────────────────────────────────────────
 
-pub fn decode(path: &Path) -> Result<Pcm> {
+fn decode(path: &Path) -> Result<Pcm> {
     use symphonia::core::{
         audio::sample::Sample,
         codecs::audio::AudioDecoderOptions,
@@ -103,7 +103,7 @@ pub fn decode(path: &Path) -> Result<Pcm> {
         .clone();
 
     let sample_rate = codec_params.sample_rate.context("unknown sample rate")?;
-    let channels    = codec_params.channels.map(|c| c.count() as u32).unwrap_or(2);
+    let channels    = codec_params.channels.as_ref().map(|c| c.count() as u32).unwrap_or(2);
 
     let mut decoder = symphonia::default::get_codecs()
         .make_audio_decoder(&codec_params, &AudioDecoderOptions::default())

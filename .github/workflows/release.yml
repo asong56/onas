@@ -18,21 +18,18 @@ jobs:
       matrix:
         include:
 
-          # ── Windows x64 ──────────────────────────────────────────────────────
           - os:       windows-latest
             target:   x86_64-pc-windows-msvc
             bin:      onas.exe
             artifact: onas-windows-x64.exe
             upx:      true
 
-          # ── Linux x64 ────────────────────────────────────────────────────────
           - os:       ubuntu-22.04
             target:   x86_64-unknown-linux-gnu
             bin:      onas
             artifact: onas-linux-x64
             upx:      true
 
-          # ── macOS Apple Silicon ───────────────────────────────────────────────
           - os:       macos-14
             target:   aarch64-apple-darwin
             bin:      onas
@@ -42,7 +39,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ── Rust ─────────────────────────────────────────────────────────────────
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -53,10 +49,6 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      # ════════════════════════════════════════════════════════════════════════
-      #  WINDOWS
-      # ════════════════════════════════════════════════════════════════════════
-
       - name: Install pkgconfiglite (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -64,10 +56,15 @@ jobs:
 
       - name: Setup vcpkg (Windows)
         if: runner.os == 'Windows'
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgGitCommitId: 'a34c873a9717a888f58dc05268dea15592c2f822'
-          vcpkgDirectory: '${{ github.workspace }}/vcpkg'
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT_DIR"
+          git -C "$env:VCPKG_ROOT_DIR" checkout a34c873a9717a888f58dc05268dea15592c2f822
+          & "$env:VCPKG_ROOT_DIR\bootstrap-vcpkg.bat" -disableMetrics
+          echo "VCPKG_ROOT=$env:VCPKG_ROOT_DIR" >> $env:GITHUB_ENV
+          echo "$env:VCPKG_ROOT_DIR"            >> $env:GITHUB_PATH
+        env:
+          VCPKG_ROOT_DIR: ${{ github.workspace }}\vcpkg
 
       - name: vcpkg install (Windows)
         if: runner.os == 'Windows'
@@ -93,10 +90,6 @@ jobs:
           echo "PKG_CONFIG_ALL_STATIC=1"                  >> $env:GITHUB_ENV
           echo "VCPKGRS_TRIPLET=x64-windows-static"       >> $env:GITHUB_ENV
           echo "VCPKG_ROOT=$env:VCPKG_ROOT"               >> $env:GITHUB_ENV
-
-      # ════════════════════════════════════════════════════════════════════════
-      #  LINUX
-      # ════════════════════════════════════════════════════════════════════════
 
       - name: Install system libraries (Linux)
         if: runner.os == 'Linux'
@@ -131,10 +124,6 @@ jobs:
           sudo ldconfig
           echo "PKG_CONFIG_PATH=/usr/local/lib/x86_64-linux-gnu/pkgconfig:/usr/local/lib/pkgconfig" >> "$GITHUB_ENV"
 
-      # ════════════════════════════════════════════════════════════════════════
-      #  macOS
-      # ════════════════════════════════════════════════════════════════════════
-
       - name: Install system libraries (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -152,16 +141,19 @@ jobs:
             nasm \
             pkg-config
 
-      # ════════════════════════════════════════════════════════════════════════
-      #  BUILD
-      # ════════════════════════════════════════════════════════════════════════
+      - name: Configure PKG_CONFIG_PATH (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          paths=()
+          for formula in opus flac libogg fdk-aac dav1d libvpx x264 libde265 x265; do
+            prefix="$(brew --prefix "$formula")"
+            paths+=("$prefix/lib/pkgconfig")
+          done
+          (IFS=:; echo "PKG_CONFIG_PATH=${paths[*]}") >> "$GITHUB_ENV"
 
       - name: Build
-        env:
-          RUSTFLAGS: ${{ runner.os == 'Linux' && '-C target-feature=+crt-static' || '' }}
         run: cargo build --release --target ${{ matrix.target }}
 
-      # ── Package ───────────────────────────────────────────────────────────────
       - name: Package Windows binary
         if: runner.os == 'Windows'
         shell: pwsh
@@ -175,7 +167,6 @@ jobs:
         shell: bash
         run: cp target/${{ matrix.target }}/release/${{ matrix.bin }} ${{ matrix.artifact }}
 
-      # ── UPX (Linux only) ──────────────────────────────────────────────────────
       - name: Compress with UPX (Linux)
         if: runner.os == 'Linux'
         uses: crazy-max/ghaction-upx@v3
@@ -184,7 +175,6 @@ jobs:
           files:   ${{ matrix.artifact }}
           args:    --best --lzma
 
-      # ── Upload CI artifact ────────────────────────────────────────────────────
       - name: Upload CI artifact (Windows)
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
@@ -199,7 +189,6 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
 
-      # ── Upload to GitHub Release (on tag push) ────────────────────────────────
       - name: Upload to GitHub Release (Windows)
         if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2

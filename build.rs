@@ -22,4 +22,38 @@ fn main() {
     build
         .file("src/vpx_abi_probe.c")
         .compile("onas_vpx_abi_probe");
+
+    link_ogg();
+}
+
+/// `flac-bound` (built with the `libflac-nobuild` feature) links the
+/// system's static `libFLAC.a` via pkg-config, but only asks pkg-config
+/// for `flac` itself — it never probes or links `ogg`, even though
+/// libFLAC's Ogg-container support (`FLAC__ogg_encoder_aspect_*` /
+/// `FLAC__ogg_decoder_aspect_*`) is implemented directly against
+/// `libogg`'s `ogg_stream_*` / `ogg_sync_*` / `ogg_page_*` symbols.
+/// A dynamic link tolerates the missing dependency (the dynamic linker
+/// resolves it transitively at load time via `libFLAC.so`'s own
+/// `DT_NEEDED` entry), but our fully static link
+/// (`-Wl,-Bstatic ... -static-pie`) does not — every symbol used by a
+/// linked static archive must be satisfied by another archive named
+/// explicitly on the link line. Probe and link `ogg` here so cargo adds
+/// `-logg` (after `libFLAC.a`, where it needs to be to satisfy FLAC's
+/// references into it).
+fn link_ogg() {
+    match pkg_config::Config::new().probe("ogg") {
+        Ok(_) => {
+            // cargo_metadata defaults to true: this alone emits both the
+            // `-L` search path and `-logg` link directive.
+        }
+        Err(e) => {
+            // Fall back to a bare `-logg` so the build still has a chance
+            // on systems whose libogg ships without a .pc file; if it's
+            // not on the default linker search path this will fail with
+            // a clearer "cannot find -logg" error instead of silently
+            // reproducing the original undefined-symbol failure.
+            println!("cargo:warning=pkg-config could not find ogg ({e}); falling back to -logg");
+            println!("cargo:rustc-link-lib=ogg");
+        }
+    }
 }

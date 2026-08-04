@@ -250,9 +250,55 @@ fn parse_resize(s: &str) -> Result<(u32, u32)> {
     Ok((w, h))
 }
 
+// ─── public API for other modules / library consumers ────────────────────────
+
+/// Encode raw interleaved RGBA8 pixels (`data.len() == w * h * 4`) straight
+/// to an image file in the given format, with an optional resize applied
+/// first (0 in either dimension keeps aspect ratio, matching `--resize`).
+///
+/// This skips the decode half of [`run`] entirely, so callers that already
+/// have pixels in memory — e.g. `video::run_frame` pulling a still frame
+/// out of a decoded video, or a library consumer with its own pixel
+/// source — don't need to round-trip through a temporary file. `fmt` is
+/// taken explicitly (rather than inferred from `path`) so callers can
+/// honor an explicit `--format` override even when it disagrees with the
+/// output extension, same as [`run`] does via [`ImageArgs`].
+pub fn encode_rgba8_to_file(
+    data: &[u8],
+    w: u32,
+    h: u32,
+    path: &Path,
+    fmt: Fmt,
+    quality: u8,
+    lossless: bool,
+    resize_to: Option<(u32, u32)>,
+) -> Result<()> {
+    if data.len() != (w as usize) * (h as usize) * 4 {
+        bail!(
+            "encode_rgba8_to_file: buffer length {} doesn't match {}×{}×4",
+            data.len(), w, h
+        );
+    }
+    let mut img = Rgba8 { w, h, data: data.to_vec() };
+    if let Some((tw, th)) = resize_to {
+        img = img.resize(tw, th);
+    }
+    encode(&img, path, fmt, quality, lossless)
+}
+
 // ─── public entry point ──────────────────────────────────────────────────────
 
 pub fn run(args: ImageArgs) -> Result<()> {
+    let (w, h) = run_capture(args)?;
+    let _ = (w, h); // run_capture already printed the summary line
+    Ok(())
+}
+
+/// Same conversion as [`run`], but returns the output dimensions instead
+/// of only printing them — used by [`crate::run_image`] (the library
+/// entry point) and by `--json` CLI output, both of which need the
+/// values programmatically rather than parsed back out of stdout text.
+pub fn run_capture(args: ImageArgs) -> Result<(u32, u32)> {
     let src_fmt = Fmt::from_path(&args.input)?;
     let dst_fmt = Fmt::from_path(&args.output)?;
 
@@ -273,5 +319,5 @@ pub fn run(args: ImageArgs) -> Result<()> {
         "{} → {}  ({}×{})",
         args.input.display(), args.output.display(), img.w, img.h
     );
-    Ok(())
+    Ok((img.w, img.h))
 }

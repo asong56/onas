@@ -70,6 +70,29 @@ onas audio track.ogg track.m4a --bitrate 256
 onas audio input.wav output.bin --format opus --bitrate 128
 ```
 
+### Frame extraction
+
+Pull a single still frame out of a video and save it as PNG or JPEG.
+
+```sh
+# First frame
+onas frame input.mkv thumbnail.png
+
+# Frame at a specific timestamp (seconds, or [H:]MM:SS[.mmm])
+onas frame input.mkv frame.png --at 12.5
+onas frame input.mkv frame.png --at 1:02.5
+
+# Frame by zero-based decoded-frame index instead of a timestamp
+onas frame input.mkv frame.jpg --at-frame 300 --quality 95
+
+# Extract and downscale in one step
+onas frame input.mkv thumb.png --at 5 --resize 640x0
+```
+
+`--at` and `--at-frame` are mutually exclusive; if neither is given, the
+first decodable frame is used. Output format is taken from the output
+extension (`.png`/`.jpg`/`.jpeg`) unless overridden with `--format`.
+
 ### Metadata
 
 ```sh
@@ -91,7 +114,66 @@ onas meta track.flac --strip
 
 ---
 
-## Build from source
+## Scripting: exit codes, `--json`, and library use
+
+`onas` is designed to be driven by other tools as well as interactively.
+
+### Exit codes
+
+Every invocation exits with one of the following codes (loosely following
+the BSD `sysexits.h` convention), so a wrapping script can tell failure
+modes apart without parsing stderr text:
+
+| Code | Meaning |
+|---|---|
+| 0  | Success |
+| 64 | Usage error — bad arguments/flags (e.g. malformed `--resize`) |
+| 65 | Input data error — malformed/unreadable content, missing track, etc. |
+| 66 | Input file could not be opened (missing, permissions) |
+| 69 | Feature recognized but not implemented (e.g. `--hardsub`) |
+| 70 | Codec error — decoder/encoder init or mid-stream failure |
+| 73 | Output could not be created/written |
+| 1  | Anything else (generic failure) |
+
+### `--json`
+
+Add `--json` to any subcommand to also print a machine-readable summary
+(or, on failure, an `{"error": ..., "exit_code": ...}` object to stderr)
+as the last line of output, alongside the normal human-readable line:
+
+```sh
+onas image photo.jpg photo.avif --json
+# photo.jpg → photo.avif  (1920×1080)
+# {"command":"image","input":"photo.jpg","output":"photo.avif","width":1920,"height":1080,"message":"1920 × 1080"}
+```
+
+### As a library
+
+`onas` also builds as a normal Rust library crate (same source, no
+subprocess needed), for programs that want to call it in-process:
+
+```rust
+use onas::{cli::ImageArgs, run_image};
+use std::path::PathBuf;
+
+let report = run_image(ImageArgs {
+    input:    PathBuf::from("in.png"),
+    output:   PathBuf::from("out.avif"),
+    quality:  85,
+    lossless: false,
+    resize:   None,
+})?;
+println!("{}×{}", report.width.unwrap(), report.height.unwrap());
+# Ok::<(), anyhow::Error>(())
+```
+
+`run_audio`, `run_video`, `run_frame`, and `run_meta` follow the same
+pattern, each taking the corresponding `cli::*Args` struct and returning
+a `Result<Report>`.
+
+---
+
+
 
 ### Requirements
 
@@ -108,12 +190,12 @@ vcpkg install libopus:x64-windows-static libflac:x64-windows-static fdk-aac:x64-
 
 **Linux** (Ubuntu/Debian):
 ```sh
-sudo apt install libopus-dev libflac-dev libfdk-aac-dev libdav1d-dev cmake nasm
+sudo apt install libopus-dev libflac-dev libogg-dev libfdk-aac-dev libdav1d-dev cmake nasm
 ```
 
 **macOS** (Homebrew):
 ```sh
-brew install opus flac fdk-aac dav1d cmake nasm
+brew install opus flac libogg fdk-aac dav1d cmake nasm
 ```
 
 ### Build
@@ -177,9 +259,9 @@ Output container: MKV only. Input: any container FFmpeg can read.
 
 **Windows**: `onas-windows-x64.zip` is a single self-contained exe (statically linked). No extra DLLs needed.
 
-**Linux**: `sudo apt install libx264-dev libde265-dev libx265-dev libvpx-dev libdav1d-dev`
+**Linux**: `sudo apt install libx264-dev libde265-dev libx265-dev libnuma-dev libvpx-dev libdav1d-dev libogg-dev`
 
-**macOS**: `brew install x264 libde265 x265 libvpx dav1d`
+**macOS**: `brew install x264 libde265 x265 libvpx dav1d libogg`
 
 ### Codec details
 

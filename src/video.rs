@@ -5,7 +5,7 @@
 //! Container: MKV read via matroska (metadata) + webm-iterable (frames)
 //!            MKV write via webm-iterable
 
-use crate::cli::{VideoArgs, VideoAudioCodec, VideoCodec};
+use crate::cli::{FrameArgs, FrameFmt, VideoArgs, VideoAudioCodec, VideoCodec};
 use anyhow::{bail, Context, Result};
 
 pub fn run(args: VideoArgs) -> Result<()> {
@@ -20,6 +20,49 @@ pub fn run(args: VideoArgs) -> Result<()> {
         bail!("--hardsub is not yet implemented. Use soft subtitle embed (omit --hardsub).");
     }
     pipeline::transcode(args)
+}
+
+/// `onas frame` entry point: decode the input up to the requested seek
+/// target and write that single frame out as a still image.
+pub fn run_frame(args: FrameArgs) -> Result<()> {
+    run_frame_capture(args)?;
+    Ok(())
+}
+
+/// Same as [`run_frame`], but returns the output dimensions instead of
+/// only printing them — used by the crate-root `onas::run_frame` library
+/// entry point and by `--json` CLI output.
+pub fn run_frame_capture(args: FrameArgs) -> Result<(u32, u32)> {
+    let fmt = args.target_fmt()?;
+    let at_ms = args.at_ms()?;
+    let resize = args.resize.as_deref().map(parse_resize).transpose()?;
+
+    let (w, h, rgba) = pipeline::extract_frame(&args.input, at_ms, args.at_frame)
+        .with_context(|| format!("extracting frame from {}", args.input.display()))?;
+
+    let image_fmt = match fmt {
+        FrameFmt::Png  => crate::image::Fmt::Png,
+        FrameFmt::Jpeg => crate::image::Fmt::Jpeg,
+    };
+
+    crate::image::encode_rgba8_to_file(
+        &rgba, w, h, &args.output, image_fmt, args.quality, /* lossless */ false, resize,
+    )?;
+
+    let (out_w, out_h) = resize
+        .map(|(tw, th)| resolve_dims(w, h, tw, th))
+        .unwrap_or((w, h));
+
+    println!(
+        "{} → {}  (frame at {}, {}×{})",
+        args.input.display(),
+        args.output.display(),
+        at_ms.map(|ms| format!("{:.3}s", ms as f64 / 1000.0))
+            .or_else(|| args.at_frame.map(|n| format!("frame #{n}")))
+            .unwrap_or_else(|| "start".to_owned()),
+        out_w, out_h,
+    );
+    Ok((out_w, out_h))
 }
 
 // ─── resize helpers ──────────────────────────────────────────────────────────
@@ -67,6 +110,32 @@ impl YuvFrame {
         resample(&self.v, self.w/2, (self.h+1)/2, &mut out.v, dw/2, (dh+1)/2);
         out
     }
+}
+
+/// BT.601 YUV(4:2:0, limited range) → interleaved RGBA8, for handing a
+/// decoded frame off to the image encoders in `src/image.rs`.
+fn yuv_to_rgba(f: &YuvFrame) -> Vec<u8> {
+    let (w, h) = (f.w as usize, f.h as usize);
+    let cw = (f.w as usize + 1) / 2;
+    let mut out = vec![0u8; w * h * 4];
+    for row in 0..h {
+        for col in 0..w {
+            let y = f.y[row * w + col] as f32;
+            let uv_row = row / 2;
+            let uv_col = col / 2;
+            let u = f.u[uv_row * cw + uv_col] as f32 - 128.0;
+            let v = f.v[uv_row * cw + uv_col] as f32 - 128.0;
+
+            let yy = (y - 16.0).max(0.0) * 1.164_383_6;
+            let r = (yy + 1.596_027 * v).round().clamp(0.0, 255.0) as u8;
+            let g = (yy - 0.391_762 * u - 0.812_968 * v).round().clamp(0.0, 255.0) as u8;
+            let b = (yy + 2.017_232 * u).round().clamp(0.0, 255.0) as u8;
+
+            let o = (row * w + col) * 4;
+            out[o] = r; out[o + 1] = g; out[o + 2] = b; out[o + 3] = 255;
+        }
+    }
+    out
 }
 
 fn resample(src: &[u8], sw: u32, sh: u32, dst: &mut [u8], dw: u32, dh: u32) {
@@ -762,6 +831,106 @@ mod pipeline {
             src_w, src_h,
             fps_num, fps_den: 1,
         })
+    }
+
+    /// Decode `input` up to the requested seek target and return that one
+    /// frame as interleaved RGBA8 pixels, plus its dimensions.
+    ///
+    /// Walks packets in file order (same as `transcode`) rather than
+    /// seeking via keyframe index, since the pure-Rust demux path here
+    /// has no keyframe-indexed random access; for `--at-frame N` this
+    /// means decoding frames `0..=N`, and for `--at MS` it means decoding
+    /// until a packet's presentation timestamp reaches `MS`. That's the
+    /// same cost `transcode` already pays for the whole file, just cut
+    /// short early.
+    pub fn extract_frame(
+        input: &std::path::Path,
+        at_ms: Option<i64>,
+        at_frame: Option<u64>,
+    ) -> Result<(u32, u32, Vec<u8>)> {
+        let info = probe_tracks(input)?;
+        let is_avcc = !info.codec_id.contains("AVC1");
+
+        let cid = &info.codec_id;
+        let mut v_dec = if cid.contains("AVC") || cid.contains("H264") || cid.contains("avc") {
+            VDec::H264(dec_h264::H264Dec::new())
+        } else if cid.contains("HEVC") || cid.contains("H265") || cid.contains("hevc") {
+            VDec::H265(dec_h265::H265Dec::new().context("H.265 decoder")?)
+        } else if cid.contains("VP9") || cid.contains("vp9") {
+            VDec::Vp9(dec_vp9::Vp9Dec::new().context("VP9 decoder")?)
+        } else if cid.contains("AV1") || cid.contains("av1") {
+            VDec::Av1(dec_av1::Av1Dec::new().context("AV1 decoder")?)
+        } else {
+            log::warn!("Unknown codec '{}', trying H.264 decoder", cid);
+            VDec::H264(dec_h264::H264Dec::new())
+        };
+
+        let src_file = std::fs::File::open(input)
+            .with_context(|| format!("opening {}", input.display()))?;
+        let tag_iter = WebmIterator::new(src_file, &[]);
+        let mut cluster_ts: i64 = 0;
+        let mut frame_idx: u64 = 0;
+        let mut best: Option<YuvFrame> = None;
+
+        'outer: for tag in tag_iter {
+            let tag = tag.context("matroska read tag")?;
+            match &tag {
+                MatroskaSpec::Timestamp(ts) => { cluster_ts = *ts as i64; }
+                MatroskaSpec::SimpleBlock(raw) => {
+                    let sb: SimpleBlock = raw.as_slice().try_into()
+                        .context("SimpleBlock parse")?;
+                    if sb.track != info.v_track { continue; }
+                    let abs_pts = cluster_ts + sb.timestamp as i64;
+                    let frames = sb.read_frame_data().context("read frame data")?;
+                    let data: Vec<u8> = frames.iter().flat_map(|f| f.data.iter().copied()).collect();
+
+                    let decoded = match &mut v_dec {
+                        VDec::H264(d) => d.decode(&data, is_avcc)?,
+                        VDec::H265(d) => d.decode(&data, abs_pts)?,
+                        VDec::Vp9(d)  => d.decode(&data, abs_pts)?,
+                        VDec::Av1(d)  => d.decode(&data, abs_pts)?,
+                    };
+                    for yuv in decoded {
+                        let hit = match (at_ms, at_frame) {
+                            (Some(ms), _)    => yuv.pts >= ms,
+                            (None, Some(n))  => frame_idx >= n,
+                            (None, None)     => true, // default: first frame
+                        };
+                        best = Some(yuv);
+                        if hit { break 'outer; }
+                        frame_idx += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // If we ran out of packets before reaching the target, fall back
+        // to whatever the flush drains (handles seek targets past the
+        // last packet's PTS, and B-frame reorder delay at end of stream).
+        if best.as_ref().map(|f| {
+            match (at_ms, at_frame) {
+                (Some(ms), _)   => f.pts < ms,
+                (None, Some(n)) => frame_idx < n,
+                (None, None)    => false,
+            }
+        }).unwrap_or(true) {
+            let flushed = match &mut v_dec {
+                VDec::H264(d) => d.flush(),
+                VDec::H265(d) => d.flush(),
+                VDec::Vp9(d)  => d.flush(),
+                VDec::Av1(d)  => d.flush(),
+            };
+            if let Some(last) = flushed.into_iter().last() {
+                best = Some(last);
+            }
+        }
+
+        let yuv = best.with_context(|| format!(
+            "no decodable video frames found in {}", input.display()
+        ))?;
+        let (w, h) = (yuv.w, yuv.h);
+        Ok((w, h, super::yuv_to_rgba(&yuv)))
     }
 
     pub fn transcode(args: VideoArgs) -> Result<()> {

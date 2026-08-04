@@ -6,11 +6,19 @@ use std::path::PathBuf;
 /// Supported image formats: JPEG, PNG, WebP, AVIF, JXL
 /// Supported audio formats: FLAC, Opus, M4A/AAC
 /// Supported video codecs:  H.264, H.265, VP9, AV1  (MKV container only)
+/// Also supports still-frame extraction from video (`onas frame`).
 #[derive(Parser)]
 #[command(name = "onas", version, about, long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
+
+    /// Also print a machine-readable JSON summary (or error) as the last
+    /// line of output, for callers driving onas as a subprocess. See
+    /// exit codes in `onas --help` output / README for the paired
+    /// process exit-status contract.
+    #[arg(long, global = true)]
+    pub json: bool,
 }
 
 #[derive(Subcommand)]
@@ -21,6 +29,8 @@ pub enum Command {
     Audio(AudioArgs),
     /// Transcode video files (H.264 ↔ H.265 ↔ VP9 ↔ AV1, MKV container)
     Video(VideoArgs),
+    /// Extract a single still frame from a video as an image (PNG/JPEG)
+    Frame(FrameArgs),
     /// Read or edit file metadata (EXIF for images, tags for audio/video)
     Meta(MetaArgs),
 }
@@ -98,6 +108,84 @@ impl AudioArgs {
                 other
             ),
         }
+    }
+}
+
+// ─── Frame extraction ────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum FrameFmt {
+    Png,
+    Jpeg,
+}
+
+#[derive(Args)]
+pub struct FrameArgs {
+    /// Input video file (MKV container)
+    pub input: PathBuf,
+    /// Output image file — extension determines format unless --format is given
+    pub output: PathBuf,
+
+    /// Seek target: either a timestamp (seconds, e.g. `12.5` or `1:02.5`)
+    /// or a frame number, selected by --at-frame instead
+    #[arg(long, value_name = "SECONDS", conflicts_with = "at_frame")]
+    pub at: Option<String>,
+
+    /// Seek target as a zero-based decoded-frame index instead of a timestamp
+    #[arg(long, value_name = "N", conflicts_with = "at")]
+    pub at_frame: Option<u64>,
+
+    /// Force output image format (auto-detected from extension by default)
+    #[arg(short, long, value_enum)]
+    pub format: Option<FrameFmt>,
+
+    /// JPEG/output quality 1–100 (ignored for lossless PNG)
+    #[arg(short, long, default_value_t = 90)]
+    pub quality: u8,
+
+    /// Resize the extracted frame: WIDTHxHEIGHT — 0 keeps aspect ratio
+    #[arg(long, value_name = "WxH")]
+    pub resize: Option<String>,
+}
+
+impl FrameArgs {
+    /// Resolve the target output image format from --format or extension.
+    pub fn target_fmt(&self) -> anyhow::Result<FrameFmt> {
+        if let Some(ref f) = self.format {
+            return Ok(f.clone());
+        }
+        match self.output.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("png")         => Ok(FrameFmt::Png),
+            Some("jpg" | "jpeg") => Ok(FrameFmt::Jpeg),
+            other => anyhow::bail!(
+                "Cannot detect image format from extension {:?}; use --format",
+                other
+            ),
+        }
+    }
+
+    /// Parse `--at` into milliseconds, accepting either plain seconds
+    /// (`12.5`) or `MM:SS.mmm` / `H:MM:SS.mmm` timecodes.
+    pub fn at_ms(&self) -> anyhow::Result<Option<i64>> {
+        let Some(ref s) = self.at else { return Ok(None) };
+        if let Ok(secs) = s.parse::<f64>() {
+            return Ok(Some((secs * 1000.0).round() as i64));
+        }
+        let parts: Vec<&str> = s.split(':').collect();
+        if parts.is_empty() || parts.len() > 3 {
+            anyhow::bail!("--at: expected SECONDS or [H:]MM:SS[.mmm], got {:?}", s);
+        }
+        let mut secs = 0f64;
+        for p in &parts {
+            let v: f64 = p.parse()
+                .map_err(|_| anyhow::anyhow!("--at: invalid time component {:?}", p))?;
+            secs = secs * 60.0 + v;
+        }
+        Ok(Some((secs * 1000.0).round() as i64))
     }
 }
 

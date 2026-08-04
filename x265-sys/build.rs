@@ -3,8 +3,8 @@ fn main() {
 
     let include_dir = match target_os.as_str() {
         "windows" => link_windows(),
-        "linux"   => link_pkg_config(),
-        "macos"   => link_pkg_config(),
+        "linux"   => link_pkg_config(&target_os),
+        "macos"   => link_pkg_config(&target_os),
         other     => panic!("x265-sys: unsupported target OS: {}", other),
     };
 
@@ -54,18 +54,24 @@ fn link_windows() -> std::path::PathBuf {
 /// Linux / macOS: use pkg-config to find x265.
 /// Returns an include directory for the build-time X265_BUILD probe.
 ///
-/// The final `onas` binary is linked fully statically
+/// The final `onas` binary is linked fully statically on Linux
 /// (`-Wl,-Bstatic ... -static-pie`), so cargo needs to know about
-/// libx265's *own* link-time dependencies, not just `-lx265` itself.
-/// Ubuntu/Debian's static `libx265.a` is built with NUMA thread-affinity
-/// support, so it references `numa_available` / `numa_allocate_nodemask` /
-/// etc. from `libnuma` — symbols a plain (non-static) pkg-config probe
-/// never surfaces, because that only reads the public `Libs:` line
-/// (just `-lx265`), not the `Libs.private:` line where `-lnuma` lives.
-/// Asking pkg-config for the *static* link line (`.statik(true)`, i.e.
-/// `pkg-config --static`) makes it also emit `Libs.private`, so `-lnuma`
-/// (and any other static-only dependency) reaches the final `cc` call.
-fn link_pkg_config() -> std::path::PathBuf {
+/// libx265's *own* link-time dependencies there, not just `-lx265`
+/// itself. Ubuntu/Debian's static `libx265.a` is built with NUMA
+/// thread-affinity support, so it references `numa_available` /
+/// `numa_allocate_nodemask` / etc. from `libnuma` — symbols a plain
+/// (non-static) pkg-config probe never surfaces, because that only reads
+/// the public `Libs:` line (just `-lx265`), not the `Libs.private:` line
+/// where `-lnuma` lives. Asking pkg-config for the *static* link line
+/// (`.statik(true)`, i.e. `pkg-config --static`) makes it also emit
+/// `Libs.private`, so `-lnuma` (and any other static-only dependency)
+/// reaches the final `cc` call.
+///
+/// NUMA is a Linux-only concept — there is no `libnuma` on macOS, and
+/// Homebrew's x265 formula is built without NUMA support entirely — so
+/// the `-lnuma` fallback below must not fire there; doing so is exactly
+/// what caused `ld: library 'numa' not found` on `aarch64-apple-darwin`.
+fn link_pkg_config(target_os: &str) -> std::path::PathBuf {
     let lib = pkg_config::Config::new()
         .atleast_version("3.0")
         .statik(true)
@@ -76,13 +82,16 @@ fn link_pkg_config() -> std::path::PathBuf {
              macOS: brew install x265"
         );
 
-    // Belt-and-suspenders: some distro .pc files simply omit
-    // `Libs.private` (it's optional metadata, easy to forget when
-    // packaging), so the `--static` probe above can still come back
-    // without `-lnuma` even though the static archive needs it. Link it
-    // explicitly too; this is a harmless no-op wherever libx265 was built
-    // without NUMA support (the symbols just go unreferenced).
-    println!("cargo:rustc-link-lib=numa");
+    if target_os == "linux" {
+        // Belt-and-suspenders: some distro .pc files simply omit
+        // `Libs.private` (it's optional metadata, easy to forget when
+        // packaging), so the `--static` probe above can still come back
+        // without `-lnuma` even though the static archive needs it. Link
+        // it explicitly too; this is a harmless no-op on any Linux system
+        // where libx265 happens to have been built without NUMA support
+        // (the symbols just go unreferenced in that case).
+        println!("cargo:rustc-link-lib=numa");
+    }
 
     lib.include_paths.into_iter().next()
         .expect("x265-sys: pkg-config returned no include path for x265")

@@ -112,11 +112,13 @@ jobs:
           sudo apt-get install -y \
             libopus-dev \
             libflac-dev \
+            libogg-dev \
             libfdk-aac-dev \
             libvpx-dev \
             libx264-dev \
             libde265-dev \
             libx265-dev \
+            libnuma-dev \
             cmake \
             nasm \
             pkg-config \
@@ -148,6 +150,7 @@ jobs:
           brew install \
             opus \
             flac \
+            libogg \
             fdk-aac \
             dav1d \
             libvpx \

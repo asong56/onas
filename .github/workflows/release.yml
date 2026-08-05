@@ -59,7 +59,7 @@ jobs:
         shell: pwsh
         run: |
           git clone https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT_DIR"
-          git -C "$env:VCPKG_ROOT_DIR" checkout a34c873a9717a888f58dc05268dea15592c2f822
+          git -C "$env:VCPKG_ROOT_DIR" checkout a34c873a9717a888f58dc05268dea15592c2f0ff
           & "$env:VCPKG_ROOT_DIR\bootstrap-vcpkg.bat" -disableMetrics
           echo "VCPKG_ROOT=$env:VCPKG_ROOT_DIR" >> $env:GITHUB_ENV
           echo "$env:VCPKG_ROOT_DIR"            >> $env:GITHUB_PATH
@@ -71,7 +71,7 @@ jobs:
         shell: pwsh
         run: |
           vcpkg install `
-            libopus:x64-windows-static `
+            opus:x64-windows-static `
             libflac:x64-windows-static `
             fdk-aac:x64-windows-static `
             dav1d:x64-windows-static `
@@ -90,6 +90,7 @@ jobs:
           echo "PKG_CONFIG_ALL_STATIC=1"                  >> $env:GITHUB_ENV
           echo "VCPKGRS_TRIPLET=x64-windows-static"       >> $env:GITHUB_ENV
           echo "VCPKG_ROOT=$env:VCPKG_ROOT"               >> $env:GITHUB_ENV
+
 
       - name: Install system libraries (Linux)
         if: runner.os == 'Linux'
@@ -124,6 +125,7 @@ jobs:
           sudo ldconfig
           echo "PKG_CONFIG_PATH=/usr/local/lib/x86_64-linux-gnu/pkgconfig:/usr/local/lib/pkgconfig" >> "$GITHUB_ENV"
 
+
       - name: Install system libraries (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -150,6 +152,7 @@ jobs:
             paths+=("$prefix/lib/pkgconfig")
           done
           (IFS=:; echo "PKG_CONFIG_PATH=${paths[*]}") >> "$GITHUB_ENV"
+
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}

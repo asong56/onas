@@ -59,7 +59,7 @@ jobs:
         shell: pwsh
         run: |
           git clone https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT_DIR"
-          git -C "$env:VCPKG_ROOT_DIR" checkout a34c873a9717a888f58dc05268dea15592c2f0ff
+          git -C "$env:VCPKG_ROOT_DIR" checkout 2026.07.29
           & "$env:VCPKG_ROOT_DIR\bootstrap-vcpkg.bat" -disableMetrics
           echo "VCPKG_ROOT=$env:VCPKG_ROOT_DIR" >> $env:GITHUB_ENV
           echo "$env:VCPKG_ROOT_DIR"            >> $env:GITHUB_PATH

@@ -174,7 +174,7 @@ pub const VPX_CODEC_LIST_END: ::libc::c_uint = 9;
 pub type vpx_codec_err_t = Enum_Unnamed3;
 pub type vpx_codec_caps_t = ::libc::c_long;
 pub type vpx_codec_flags_t = ::libc::c_long;
-pub enum Struct_vpx_codec_iface { }
+pub struct Struct_vpx_codec_iface { _opaque: [u8; 0] }
 pub type vpx_codec_iface_t = Struct_vpx_codec_iface;
 pub enum Struct_vpx_codec_priv { }
 pub type vpx_codec_priv_t = Struct_vpx_codec_priv;

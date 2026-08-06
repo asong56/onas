@@ -19,7 +19,7 @@ fn link_windows() {
 
     println!("cargo:rustc-link-lib=static=ogg");
 
-    println!("cargo:rustc-link-lib=static=de265");
+    println!("cargo:rustc-link-lib=static=libde265");
 
     println!("cargo:rustc-link-lib=static=FLAC");
 

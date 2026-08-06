@@ -74,7 +74,7 @@ impl ::Interface for Interface {
 }
 impl InternalInterface for Interface {
     fn iface(&self) -> *mut ffi::vpx_codec_iface_t {
-        unsafe { &mut ffi::vpx_codec_vp9_cx_algo as *mut _ }
+        unsafe { &raw mut ffi::vpx_codec_vp9_cx_algo }
     }
 }
 

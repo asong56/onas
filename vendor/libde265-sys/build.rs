@@ -135,7 +135,28 @@ fn build_libde265_from_sources() -> anyhow::Result<()> {
 }
 
 fn link_system_libde265() -> anyhow::Result<()> {
+    // onas's own build.rs already links libde265 on Linux/macOS via
+    // pkg-config (which reads the real `-lde265` from libde265.pc), so
+    // emitting our own directive there too is redundant. On Windows,
+    // onas's build.rs links the vcpkg-installed static lib directly, and
+    // this crate's old unconditional `dylib=de265` directive requested a
+    // file that doesn't exist there: libde265's own CMakeLists.txt sets
+    // PREFIX "lib" specifically on Windows, so vcpkg produces
+    // libde265.lib, not de265.lib, and it's a static lib, not a dylib.
+    //
+    // rustc validates that a `static=` library actually exists at the
+    // point it compiles *this* crate, using only the `-L` paths *this*
+    // crate's own build.rs has emitted -- it doesn't see onas's top-level
+    // build.rs's search path, even though the final binary link would
+    // have. So this crate has to point at VCPKG_ROOT itself too.
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        let vcpkg_root = env::var("VCPKG_ROOT")
+            .expect("libde265-sys: VCPKG_ROOT must be set on Windows");
+        let lib_dir = PathBuf::from(vcpkg_root)
+            .join("installed")
+            .join("x64-windows-static")
+            .join("lib");
+        println!("cargo:rustc-link-search=native={}", lib_dir.display());
         println!("cargo:rustc-link-lib=static=libde265");
     }
     Ok(())

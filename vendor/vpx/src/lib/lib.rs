@@ -125,7 +125,7 @@ impl Into<ffi::vpx_img_fmt_t> for Format {
             I440 { hi_bit_depth: true } => VPX_IMG_FMT_I44416,
             I444 { hi_bit_depth: true } => VPX_IMG_FMT_I44016,
 
-            /// Should be named `444A`.
+            // Should be named `444A`.
             I444A => VPX_IMG_FMT_444A,
         }
     }
@@ -155,6 +155,12 @@ impl Into<ffi::vpx_color_space_t> for ColorSpace {
 }
 
 const IMAGE_ABI_VERSION: i32 = 3;
+// Field 2 (`Cow<'a, [u8]>`) is never read directly, but it must stay
+// alive: `new()` hands its raw pointer to `vpx_img_wrap`, which stores it
+// in `self.0` without taking ownership, so this field is what keeps that
+// buffer alive for as long as the `Image` exists. Removing it would leave
+// `self.0` holding a dangling pointer.
+#[allow(dead_code)]
 pub struct Image<'a>(ffi::vpx_image_t, Format, Cow<'a, [u8]>);
 
 impl<'a> Image<'a> {
@@ -163,7 +169,7 @@ impl<'a> Image<'a> {
     pub fn new(data: Cow<'a, [u8]>, fmt: Format,
                color_space: ColorSpace,
                width: u32, height: u32,
-               stride: u32) -> Image
+               stride: u32) -> Image<'a>
     {
         let mut t: ffi::vpx_image_t = Default::default();
         unsafe {
@@ -279,7 +285,7 @@ impl Interface for VP8DecoderInterface {
 }
 impl InternalInterface for VP8DecoderInterface {
     fn iface(&self) -> *mut ffi::vpx_codec_iface_t {
-        &mut ffi::vpx_codec_vp8_dx_algo as *mut _
+        &raw mut ffi::vpx_codec_vp8_dx_algo
     }
 }
 #[derive(Copy, Clone)]
@@ -289,7 +295,7 @@ impl Interface for VP9DecoderInterface {
 }
 impl InternalInterface for VP9DecoderInterface {
     fn iface(&self) -> *mut ffi::vpx_codec_iface_t {
-        &mut ffi::vpx_codec_vp9_dx_algo as *mut _
+        &raw mut ffi::vpx_codec_vp9_dx_algo
     }
 }
 
@@ -300,6 +306,6 @@ impl Interface for VP8EncoderInterface {
 }
 impl InternalInterface for VP8EncoderInterface {
     fn iface(&self) -> *mut ffi::vpx_codec_iface_t {
-        &mut ffi::vpx_codec_vp8_cx_algo as *mut _
+        &raw mut ffi::vpx_codec_vp8_cx_algo
     }
 }*/

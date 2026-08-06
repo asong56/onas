@@ -661,34 +661,34 @@ pub struct en265_packet {
 impl en265_packet {
     #[inline]
     pub fn complete_picture(&self) -> ::std::os::raw::c_char {
-        unsafe { ::std::mem::transmute(self._bitfield_1.get(0usize, 1u8) as u8) }
+        unsafe { u8::cast_signed(self._bitfield_1.get(0usize, 1u8) as u8) }
     }
     #[inline]
     pub fn set_complete_picture(&mut self, val: ::std::os::raw::c_char) {
         unsafe {
-            let val: u8 = ::std::mem::transmute(val);
+            let val: u8 = i8::cast_unsigned(val);
             self._bitfield_1.set(0usize, 1u8, val as u64)
         }
     }
     #[inline]
     pub fn final_slice(&self) -> ::std::os::raw::c_char {
-        unsafe { ::std::mem::transmute(self._bitfield_1.get(1usize, 1u8) as u8) }
+        unsafe { u8::cast_signed(self._bitfield_1.get(1usize, 1u8) as u8) }
     }
     #[inline]
     pub fn set_final_slice(&mut self, val: ::std::os::raw::c_char) {
         unsafe {
-            let val: u8 = ::std::mem::transmute(val);
+            let val: u8 = i8::cast_unsigned(val);
             self._bitfield_1.set(1usize, 1u8, val as u64)
         }
     }
     #[inline]
     pub fn dependent_slice(&self) -> ::std::os::raw::c_char {
-        unsafe { ::std::mem::transmute(self._bitfield_1.get(2usize, 1u8) as u8) }
+        unsafe { u8::cast_signed(self._bitfield_1.get(2usize, 1u8) as u8) }
     }
     #[inline]
     pub fn set_dependent_slice(&mut self, val: ::std::os::raw::c_char) {
         unsafe {
-            let val: u8 = ::std::mem::transmute(val);
+            let val: u8 = i8::cast_unsigned(val);
             self._bitfield_1.set(2usize, 1u8, val as u64)
         }
     }
@@ -700,15 +700,15 @@ impl en265_packet {
     ) -> __BindgenBitfieldUnit<[u8; 1usize]> {
         let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 1usize]> = Default::default();
         __bindgen_bitfield_unit.set(0usize, 1u8, {
-            let complete_picture: u8 = unsafe { ::std::mem::transmute(complete_picture) };
+            let complete_picture: u8 = unsafe { i8::cast_unsigned(complete_picture) };
             complete_picture as u64
         });
         __bindgen_bitfield_unit.set(1usize, 1u8, {
-            let final_slice: u8 = unsafe { ::std::mem::transmute(final_slice) };
+            let final_slice: u8 = unsafe { i8::cast_unsigned(final_slice) };
             final_slice as u64
         });
         __bindgen_bitfield_unit.set(2usize, 1u8, {
-            let dependent_slice: u8 = unsafe { ::std::mem::transmute(dependent_slice) };
+            let dependent_slice: u8 = unsafe { i8::cast_unsigned(dependent_slice) };
             dependent_slice as u64
         });
         __bindgen_bitfield_unit

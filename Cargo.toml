@@ -90,6 +90,9 @@ matroska   = "0.6"
 vpx       = { path = "vendor/vpx" }
 libvpx-sys = { path = "vendor/vpx-sys" }
 
+[patch.crates-io]
+libde265-sys = { path = "vendor/libde265-sys" }
+
 [profile.release]
 opt-level     = "z"
 lto           = "fat"
@@ -97,7 +100,6 @@ codegen-units = 1
 panic         = "abort"
 strip         = "symbols"
 
-# codec crates need speed, override the global "z"
 [profile.release.package.dav1d]
 opt-level = 3
 [profile.release.package.ravif]

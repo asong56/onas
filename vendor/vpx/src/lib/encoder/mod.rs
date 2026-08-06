@@ -1,311 +1,154 @@
-use std::borrow::Cow;
-use std::ffi::{CStr};
-use std::mem::transmute;
+use ffi;
+use super::{Error, Frame, Image};
 
-extern crate vpx_sys as ffi;
-extern crate libc;
+use libc;
 
-pub mod encoder;
+pub mod vp9;
 
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
-pub enum Error {
-    Generic(u32),
-    Mem,
-    AbiMismatch,
-    Incapable,
-    /// The bitstream was unable to be parsed at the highest level. The decoder is unable to proceed. This error SHOULD be treated as fatal to the stream.
-    UnsupportedBitstream,
-    /// The decoder does not implement a feature required by the encoder. This return code should only be used for features that prevent future pictures from being properly decoded. This error MAY be treated as fatal to the stream or MAY be treated as fatal to the current GOP.
-    UnsupportedFrame,
-    /// There was a problem decoding the current frame. This return code should only be used for failures that prevent future pictures from being properly decoded. This error MAY be treated as fatal to the stream or MAY be treated as fatal to the current GOP. If decoding is continued for the current GOP, artifacts may be present.
-    CorruptFrame,
-    InvalidParam,
-    ListEnd,
+const ENCODER_ABI_VERSION: i32 = super::CODEC_ABI_VERSION + 5;
+
+pub const DL_REALTIME: u64 = 1;
+pub const DL_GOOD_QUALITY: u64 = 1000000;
+pub const DL_BEST_QUALITY: u64 = 0;
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub struct FrameFlags {
+    keyframe: bool,
 }
-impl From<u32> for Error {
-    fn from(v: u32) -> Error {
-        match v {
-            ffi::VPX_CODEC_MEM_ERROR => Error::Mem,
-            ffi::VPX_CODEC_ABI_MISMATCH => Error::AbiMismatch,
-            ffi::VPX_CODEC_INCAPABLE => Error::Incapable,
-            ffi::VPX_CODEC_UNSUP_BITSTREAM => Error::UnsupportedBitstream,
-            ffi::VPX_CODEC_UNSUP_FEATURE => Error::UnsupportedFrame,
-            ffi::VPX_CODEC_CORRUPT_FRAME => Error::CorruptFrame,
-            ffi::VPX_CODEC_INVALID_PARAM => Error::InvalidParam,
-            ffi::VPX_CODEC_LIST_END => Error::ListEnd,
-            n => Error::Generic(n),
+impl Default for FrameFlags {
+    fn default() -> FrameFlags {
+        FrameFlags {
+            keyframe: false,
         }
     }
 }
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
-        <Self as std::fmt::Debug>::fmt(self,fmt)
+#[doc(hidden)]
+impl Into<ffi::vpx_enc_frame_flags_t> for FrameFlags {
+    fn into(self) -> ffi::vpx_enc_frame_flags_t {
+        let mut flags: ffi::vpx_enc_frame_flags_t = 0;
+        if self.keyframe { flags |= 1 << 0; }
+        return flags;
     }
 }
-impl std::error::Error for Error {
-    fn description(&self) -> &str {
-        match *self {
-            Error::Generic(_) => "Unspecified error",
-            Error::Mem => "Memory operation failed",
-            Error::AbiMismatch => "ABI version mismatch",
-            Error::Incapable => "Algorithm does not have required capability",
-            Error::UnsupportedBitstream => "The given bitstream is not supported",
-            Error::UnsupportedFrame => "Encoded bitstream uses an unsupported feature",
-            Error::CorruptFrame => "The coded data for this stream is corrupt or incomplete",
-            Error::InvalidParam => "An application-supplied parameter is not valid",
-            Error::ListEnd => "An iterator reached the end of list",
-        }
+impl FrameFlags {
+    pub fn new() -> FrameFlags { Default::default() }
+
+    pub fn keyframe(mut self, keyframe: bool) -> FrameFlags {
+        self.keyframe = keyframe;
+        self
     }
 }
 
-pub type Rect = ffi::vpx_image_rect_t;
-
-#[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
-#[allow(non_camel_case_types)]
-pub enum Format {
-    RGB24,
-    RGB32 { le: bool, },
-    RGB565 { le: bool, },
-    RGB555 { le: bool, },
-
-    UYVY,
-    YUY2,
-    YVYU,
-    BGR24,
-    ARGB,
-    BGRA,
-
-    YV12_VPX,
-    I420_VPX,
-
-    YV12,
-
-    I420 { hi_bit_depth: bool },
-    I422 { hi_bit_depth: bool },
-    I440 { hi_bit_depth: bool },
-    I444 { hi_bit_depth: bool },
-
-    /// Should be named `444A`.
-    I444A,
-}
-impl Into<ffi::vpx_img_fmt_t> for Format {
-    fn into(self) -> ffi::vpx_img_fmt_t {
-        use Format::*;
-        use ffi::*;
-
-        match self {
-            RGB24 => VPX_IMG_FMT_RGB24,
-            RGB32 { le: false, } => VPX_IMG_FMT_RGB32,
-            RGB32 { le: true, } => VPX_IMG_FMT_RGB32_LE,
-            RGB565 { le: false, } => VPX_IMG_FMT_RGB565,
-            RGB565 { le: true, } => VPX_IMG_FMT_RGB565_LE,
-            RGB555 { le: false, } => VPX_IMG_FMT_RGB555,
-            RGB555 { le: true, } => VPX_IMG_FMT_RGB555_LE,
-
-            UYVY => VPX_IMG_FMT_UYVY,
-            YUY2 => VPX_IMG_FMT_YUY2,
-            YVYU => VPX_IMG_FMT_YVYU,
-            BGR24 => VPX_IMG_FMT_BGR24,
-            ARGB => VPX_IMG_FMT_ARGB,
-            BGRA => VPX_IMG_FMT_ARGB_LE,
-
-            YV12_VPX => VPX_IMG_FMT_VPXYV12,
-            I420_VPX => VPX_IMG_FMT_VPXI420,
-
-            YV12 => VPX_IMG_FMT_YV12,
-
-            I420 { hi_bit_depth: false } => VPX_IMG_FMT_I420,
-            I422 { hi_bit_depth: false } => VPX_IMG_FMT_I422,
-            I440 { hi_bit_depth: false } => VPX_IMG_FMT_I444,
-            I444 { hi_bit_depth: false } => VPX_IMG_FMT_I440,
-
-            I420 { hi_bit_depth: true } => VPX_IMG_FMT_I42016,
-            I422 { hi_bit_depth: true } => VPX_IMG_FMT_I42216,
-            I440 { hi_bit_depth: true } => VPX_IMG_FMT_I44416,
-            I444 { hi_bit_depth: true } => VPX_IMG_FMT_I44016,
-
-            // Should be named `444A`.
-            I444A => VPX_IMG_FMT_444A,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
-#[allow(non_camel_case_types)]
-pub enum ColorSpace {
-    BT601,
-    BT709,
-    SMPTE170,
-    SMPTE240,
-    BT2020,
-    SRGB,
-}
-impl Into<ffi::vpx_color_space_t> for ColorSpace {
-    fn into(self) -> ffi::vpx_color_space_t {
-        match self {
-            ColorSpace::BT601 => ffi::VPX_CS_BT_601,
-            ColorSpace::BT709 => ffi::VPX_CS_BT_709,
-            ColorSpace::SMPTE170 => ffi::VPX_CS_SMPTE_170,
-            ColorSpace::SMPTE240 => ffi::VPX_CS_SMPTE_240,
-            ColorSpace::BT2020 => ffi::VPX_CS_BT_2020,
-            ColorSpace::SRGB => ffi::VPX_CS_SRGB,
-        }
-    }
-}
-
-const IMAGE_ABI_VERSION: i32 = 3;
-// Field 2 (`Cow<'a, [u8]>`) is never read directly, but it must stay
-// alive: `new()` hands its raw pointer to `vpx_img_wrap`, which stores it
-// in `self.0` without taking ownership, so this field is what keeps that
-// buffer alive for as long as the `Image` exists. Removing it would leave
-// `self.0` holding a dangling pointer.
-#[allow(dead_code)]
-pub struct Image<'a>(ffi::vpx_image_t, Format, Cow<'a, [u8]>);
-
-impl<'a> Image<'a> {
-    /// XXX this function doesn't check that `data` is long enough for the
-    /// format or view size.
-    pub fn new(data: Cow<'a, [u8]>, fmt: Format,
-               color_space: ColorSpace,
-               width: u32, height: u32,
-               stride: u32) -> Image<'a>
-    {
-        let mut t: ffi::vpx_image_t = Default::default();
-        unsafe {
-            ffi::vpx_img_wrap(&mut t as *mut _,
-                              fmt.into(), width,
-                              height, stride,
-                              data.as_ptr() as *mut _);
-        };
-        t.cs = color_space.into();
-        Image(t, fmt, data)
-    }
-
-    pub fn get_format(&self) -> Format { self.1.clone() }
-
-    pub fn set_rect(&mut self, rect: Rect) -> Result<(), ()> {
+pub trait Encoder: InternalEncoder
+    where <Self as Encoder>::Cfg: AsRef<ffi::vpx_codec_enc_cfg_t>,
+{
+    type Cfg;
+    fn set_cfg(&mut self, cfg: Self::Cfg) -> Result<(), Error> {
         let res = unsafe {
-            ffi::vpx_img_set_rect(&mut self.0 as *mut _,
-                                  rect.x, rect.y,
-                                  rect.w, rect.h)
+            ffi::vpx_codec_enc_config_set(self.get_mut_ctx(),
+                                          cfg.as_ref() as *const _)
         };
         if res == 0 {
             Ok(())
         } else {
-            Err(())
+            Err(From::from(res))
         }
     }
-    pub fn flip(&mut self) {
-        unsafe {
-            ffi::vpx_img_flip(&mut self.0 as *mut _);
-        }
-    }
-}
-impl<'a> Drop for Image<'a> {
-    fn drop(&mut self) {
-        unsafe { ffi::vpx_img_free(&mut self.0 as *mut _) }
-    }
-}
-#[derive(Debug, Clone)]
-pub struct Frame<'a> {
-    data: &'a [u8],
-    pub pts: u64,
-    pub duration: u64,
-    pub flags: ffi::vpx_codec_frame_flags_t,
-    pub partition_id: i32,
-}
-pub const FRAME_IS_KEY: u32 = 0x1;
-pub const FRAME_IS_DROPPABLE: u32 = 0x2;
-pub const FRAME_IS_INVISIBLE: u32 = 0x4;
-pub const FRAME_IS_FRAGMENT: u32 = 0x8;
-impl<'a> Frame<'a> {
-    pub fn data(&self) -> &'a [u8] { self.data }
 
-    pub fn is_keyframe(&self) -> bool {
-        self.flags & FRAME_IS_KEY != 0
-    }
-    pub fn is_droppable(&self) -> bool {
-        self.flags & FRAME_IS_DROPPABLE != 0
-    }
-    pub fn is_invisible(&self) -> bool {
-        self.flags & FRAME_IS_INVISIBLE != 0
-    }
-    pub fn is_fragment(&self) -> bool {
-        self.flags & FRAME_IS_FRAGMENT != 0
-    }
-}
-impl<'a> From<&'a ffi::Struct_Unnamed6> for Frame<'a> {
-    fn from(v: &'a ffi::Struct_Unnamed6) -> Frame<'a> {
-        let data: &'a [u8] = unsafe {
-            ::std::slice::from_raw_parts(v.buf as *const u8, v.sz as usize)
+    /// `duration` must be non-zero.
+    fn encode(&mut self, image: &Image,
+              pts: ffi::vpx_codec_pts_t,
+              duration: u64,
+              flags: FrameFlags,
+              deadline: u64) -> Result<(), Error> {
+        let res = unsafe {
+            ffi::vpx_codec_encode(self.get_mut_ctx(),
+                                  &image.0 as *const _,
+                                  pts,
+                                  duration as libc::c_ulong,
+                                  flags.into(),
+                                  deadline as libc::c_ulong)
         };
+        if res != 0 {
+            Err(From::from(res))
+        } else {
+            Ok(())
+        }
+    }
 
-        Frame {
-            data: data,
-            pts: v.pts as u64,
-            duration: v.duration as u64,
-            flags: v.flags,
-            partition_id: v.partition_id,
+    /// Call once there are no more frames to encode.
+    fn flush(&mut self,
+             pts: ffi::vpx_codec_pts_t,
+             duration: u64,
+             flags: ffi::vpx_enc_frame_flags_t,
+             deadline: u64) -> Result<(), Error>
+    {
+        let res = unsafe {
+            ffi::vpx_codec_encode(self.get_mut_ctx(),
+                                  0 as *const _,
+                                  pts, duration as libc::c_ulong,
+                                  flags, deadline as libc::c_ulong)
+        };
+        if res == 0 {
+            Ok(())
+        } else {
+            Err(From::from(res))
+        }
+    }
+
+    fn packets<T: PacketWriter>(&mut self, dest: &mut T) -> Result<(), ::std::io::Error> {
+        use std::mem::transmute;
+        use std::slice::from_raw_parts;
+        let mut iter: ffi::vpx_codec_iter_t = 0 as *mut _;
+        unsafe {
+            loop {
+                let pkt = ffi::vpx_codec_get_cx_data(self.get_mut_ctx(),
+                                                     &mut iter as *mut _);
+                if pkt.is_null() { return Ok(()); }
+
+                let pkt: &ffi::vpx_codec_cx_pkt_t = transmute(pkt);
+                match pkt.kind {
+                    ffi::VPX_CODEC_CX_FRAME_PKT => {
+                        let frame: &ffi::Struct_Unnamed6 = transmute(pkt.data.frame_ref());
+                        let frame: Frame = From::from(frame);
+                        dest.write_frame(&frame)?;
+                    },
+                    ffi::VPX_CODEC_STATS_PKT => {
+                        let buf: &ffi::vpx_fixed_buf_t = transmute(pkt.data.twopass_stats_ref());
+                        let buf = from_raw_parts(buf.buf as *const u8, buf.sz as usize);
+                        dest.write_two_pass_stats(buf)?;
+                    },
+                    ffi::VPX_CODEC_FPMB_STATS_PKT => {
+                        let buf: &ffi::vpx_fixed_buf_t = transmute(pkt.data.twopass_stats_ref());
+                        let buf = from_raw_parts(buf.buf as *const u8, buf.sz as usize);
+                        dest.write_two_pass_stats(buf)?;
+                    },
+                    ffi::VPX_CODEC_PSNR_PKT => {
+                        let psnr: &ffi::Struct_vpx_psnr_pkt = transmute(pkt.data.psnr_ref());
+                        dest.write_psnr(&psnr.samples, &psnr.sse, &psnr.psnr)?;
+                    },
+                    kind => {
+                        dest.write_custom(kind, &pkt.data)?;
+                    },
+                }
+            }
         }
     }
 }
 
-const CODEC_ABI_VERSION: i32 = IMAGE_ABI_VERSION + 3;
-
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub enum Kind {
-    Decoder,
-    Encoder,
-}
-
-pub trait Interface: InternalInterface + Default {
-    type Context;
-    type Cfg;
-    fn name(&self) -> &'static str {
-        let pname = unsafe { ffi::vpx_codec_iface_name(self.iface()) };
-        let str = unsafe { CStr::from_ptr(pname).to_str().unwrap() };
-        unsafe { transmute(str) }
-    }
-    fn kind(&self) -> Kind;
-
-    fn create(&self, cfg: <Self as Interface>::Cfg, flags: ffi::vpx_codec_flags_t) ->
-        Result<<Self as Interface>::Context, Error>;
-}
 #[doc(hidden)]
-pub trait InternalInterface {
-    fn iface(&self) -> *mut ffi::vpx_codec_iface_t;
+pub trait InternalEncoder {
+    fn get_ref_ctx(&self) -> *const ffi::vpx_codec_ctx_t;
+    fn get_mut_ctx(&mut self) -> *mut ffi::vpx_codec_ctx_t;
 }
 
-
-/*#[derive(Copy, Clone)]
-pub struct VP8DecoderInterface;
-impl Interface for VP8DecoderInterface {
-    fn kind(&self) -> Kind { Kind::Decoder }
+pub trait PacketWriter {
+    fn write_frame<'a>(&mut self, _frame: &Frame<'a>) -> Result<(), ::std::io::Error> { Ok(()) }
+    fn write_two_pass_stats(&mut self, _stats: &[u8]) -> Result<(), ::std::io::Error> { Ok(()) }
+    fn write_first_pass_mb_stats(&mut self, _stats: &[u8]) -> Result<(), ::std::io::Error> { Ok(()) }
+    fn write_psnr(&mut self, _samples: &[u32; 4], _sse: &[u64; 4],
+                  _psnr: &[f64; 4]) -> Result<(), ::std::io::Error> { Ok(()) }
+    fn write_custom(&mut self,
+                    _kind: ffi::Enum_vpx_codec_cx_pkt_kind,
+                    _data: &ffi::Union_Unnamed5) -> Result<(), ::std::io::Error> { Ok(()) }
 }
-impl InternalInterface for VP8DecoderInterface {
-    fn iface(&self) -> *mut ffi::vpx_codec_iface_t {
-        &raw mut ffi::vpx_codec_vp8_dx_algo
-    }
-}
-#[derive(Copy, Clone)]
-pub struct VP9DecoderInterface;
-impl Interface for VP9DecoderInterface {
-    fn kind(&self) -> Kind { Kind::Decoder }
-}
-impl InternalInterface for VP9DecoderInterface {
-    fn iface(&self) -> *mut ffi::vpx_codec_iface_t {
-        &raw mut ffi::vpx_codec_vp9_dx_algo
-    }
-}
-
-#[derive(Copy, Clone)]
-pub struct VP8EncoderInterface;
-impl Interface for VP8EncoderInterface {
-    fn kind(&self) -> Kind { Kind::Decoder }
-}
-impl InternalInterface for VP8EncoderInterface {
-    fn iface(&self) -> *mut ffi::vpx_codec_iface_t {
-        &raw mut ffi::vpx_codec_vp8_cx_algo
-    }
-}*/

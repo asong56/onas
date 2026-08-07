@@ -37,7 +37,7 @@ zune-jpeg  = "0.4"
 zune-png   = "0.4"
 zune-core  = "0.4"
 # image 0.25 handles WebP decode/encode and AVIF decode via dav1d
-image      = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "avif"] }
+image      = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "avif", "avif-native"] }
 # AVIF encode: pure Rust (uses rav1e internally)
 ravif      = "0.13"
 # AVIF decode + AV1: dav1d C library (vcpkg on Windows)
@@ -100,6 +100,7 @@ codegen-units = 1
 panic         = "abort"
 strip         = "symbols"
 
+# codec crates need speed, override the global "z"
 [profile.release.package.dav1d]
 opt-level = 3
 [profile.release.package.ravif]

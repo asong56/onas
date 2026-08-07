@@ -18,7 +18,11 @@ fn classify(p: &Path) -> Result<Class> {
         .map(|e| e.to_ascii_lowercase())
         .as_deref()
     {
-        Some("jpg" | "jpeg" | "png" | "webp" | "avif" | "jxl") => Ok(Class::Image),
+        // nom-exif also parses container track metadata (falls through to
+        // parse_track in image_dump below), so route Matroska/ISOBMFF video
+        // containers through the same path instead of rejecting them.
+        Some("jpg" | "jpeg" | "png" | "webp" | "avif" | "jxl"
+             | "mkv" | "webm" | "mka" | "mp4" | "mov" | "3gp") => Ok(Class::Image),
         Some("flac" | "opus" | "m4a" | "aac" | "mp3" | "ogg" | "wav") => Ok(Class::Audio),
         other => bail!("Cannot determine metadata class from extension: {:?}", other),
     }

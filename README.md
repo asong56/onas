@@ -1,6 +1,6 @@
 # onas
 
-Fast image conversion and audio transcoding CLI.
+Fast image conversion, audio transcoding, and video transcoding CLI.
 
 ---
 
@@ -12,6 +12,8 @@ Fast image conversion and audio transcoding CLI.
 | **Image encode** | JPEG · PNG · WebP · AVIF · JXL |
 | **Audio decode** | FLAC · Opus · M4A/AAC · MP3 · OGG · WAV · and more |
 | **Audio encode** | FLAC · Opus · M4A (AAC-LC) |
+| **Video decode** | H.264 · H.265 · VP9 · AV1 (any container FFmpeg can read) |
+| **Video encode** | H.264 · H.265 · VP9 · AV1 · copy (MKV container only) |
 | **Metadata read** | EXIF (images) · ID3v2 · VorbisComments · MP4 ilst |
 | **Metadata write** | ID3v2 · VorbisComments · MP4 ilst |
 
@@ -69,6 +71,43 @@ onas audio track.ogg track.m4a --bitrate 256
 # Force output format regardless of extension
 onas audio input.wav output.bin --format opus --bitrate 128
 ```
+
+### Video
+
+```sh
+# MP4 H.264 → MKV H.265, Opus audio, CRF 22
+onas video input.mp4 output.mkv --vcodec h265 --acodec opus --crf 22
+
+# Any input → MKV AV1, FLAC audio
+onas video input.mkv output.mkv --vcodec av1 --acodec flac --crf 28
+
+# Copy video stream, re-encode audio only
+onas video input.mkv output.mkv --vcodec copy --acodec opus --abitrate 128
+
+# Resize to 1280×720, transcode to VP9
+onas video input.mp4 output.mkv --vcodec vp9 --resize 1280x720 --crf 33
+
+# Soft-embed external subtitle (ASS or SRT)
+onas video input.mkv output.mkv --vcodec copy --acodec copy --sub subs.ass
+
+# Hard burn-in subtitle into video frames
+onas video input.mkv output.mkv --vcodec h264 --sub subs.srt --hardsub
+
+# Extra encoder options
+onas video input.mp4 output.mkv --vcodec h264 --opt preset=slow --opt tune=film
+
+# Multi-threaded encode
+onas video input.mp4 output.mkv --vcodec h265 --threads 8
+```
+
+Output container is MKV only; input can be any container FFmpeg can read.
+
+| Codec | Decode | Encode |
+|---|---|---|
+| H.264 | rust_h264 (pure Rust) | x264 (vcpkg) |
+| H.265 | libde265 (vcpkg) | x265 (our FFI) |
+| VP9 | libvpx (vcpkg) | libvpx (vcpkg) |
+| AV1 | dav1d (vcpkg) | rav1e (pure Rust) |
 
 ### Frame extraction
 
@@ -173,8 +212,6 @@ a `Result<Report>`.
 
 ---
 
-
-
 ### Requirements
 
 - Rust 1.78+
@@ -185,17 +222,18 @@ a `Result<Report>`.
 
 **Windows** (via [vcpkg](https://vcpkg.io)):
 ```powershell
-vcpkg install libopus:x64-windows-static libflac:x64-windows-static fdk-aac:x64-windows-static dav1d:x64-windows-static
+vcpkg install opus:x64-windows-static libflac:x64-windows-static fdk-aac:x64-windows-static dav1d:x64-windows-static libvpx:x64-windows-static x264:x64-windows-static libde265:x64-windows-static x265:x64-windows-static
 ```
+`onas-windows-x64.zip` ships as a single self-contained exe (statically linked) — no extra DLLs needed at runtime.
 
 **Linux** (Ubuntu/Debian):
 ```sh
-sudo apt install libopus-dev libflac-dev libogg-dev libfdk-aac-dev libdav1d-dev cmake nasm
+sudo apt install libopus-dev libflac-dev libogg-dev libfdk-aac-dev libdav1d-dev libvpx-dev libx264-dev libde265-dev libx265-dev libnuma-dev cmake nasm
 ```
 
 **macOS** (Homebrew):
 ```sh
-brew install opus flac libogg fdk-aac dav1d cmake nasm
+brew install opus flac libogg fdk-aac dav1d libvpx x264 libde265 x265 cmake nasm
 ```
 
 ### Build
@@ -220,54 +258,3 @@ Binary will be at `target/release/onas` (or `onas.exe` on Windows).
 ## License
 
 MIT
-
----
-
-## Video
-
-```sh
-# MP4 H.264 → MKV H.265, Opus audio, CRF 22
-onas video input.mp4 output.mkv --vcodec h265 --acodec opus --crf 22
-
-# Any input → MKV AV1, FLAC audio
-onas video input.mkv output.mkv --vcodec av1 --acodec flac --crf 28
-
-# Copy video stream, re-encode audio only
-onas video input.mkv output.mkv --vcodec copy --acodec opus --abitrate 128
-
-# Resize to 1280×720, transcode to VP9
-onas video input.mp4 output.mkv --vcodec vp9 --resize 1280x720 --crf 33
-
-# Soft-embed external subtitle (ASS or SRT)
-onas video input.mkv output.mkv --vcodec copy --acodec copy --sub subs.ass
-
-# Hard burn-in subtitle into video frames
-onas video input.mkv output.mkv --vcodec h264 --sub subs.srt --hardsub
-
-# Extra encoder options
-onas video input.mp4 output.mkv --vcodec h264 --opt preset=slow --opt tune=film
-
-# Multi-threaded encode
-onas video input.mp4 output.mkv --vcodec h265 --threads 8
-```
-
-Supported video codecs: `h264`, `h265`, `vp9`, `av1`, `copy`
-Supported audio codecs: `opus`, `aac`, `flac`, `copy`
-Output container: MKV only. Input: any container FFmpeg can read.
-
-### Video setup notes
-
-**Windows**: `onas-windows-x64.zip` is a single self-contained exe (statically linked). No extra DLLs needed.
-
-**Linux**: `sudo apt install libx264-dev libde265-dev libx265-dev libnuma-dev libvpx-dev libdav1d-dev libogg-dev`
-
-**macOS**: `brew install x264 libde265 x265 libvpx dav1d libogg`
-
-### Codec details
-
-| Codec | Decode | Encode |
-|---|---|---|
-| H.264 | rust_h264 (pure Rust) | x264 (vcpkg) |
-| H.265 | libde265 (vcpkg) | x265 (our FFI) |
-| VP9 | libvpx (vcpkg) | libvpx (vcpkg) |
-| AV1 | dav1d (vcpkg) | rav1e (pure Rust) |

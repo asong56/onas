@@ -2,13 +2,23 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 /// onas — image conversion, audio and video transcoding CLI
-///
-/// Supported image formats: JPEG, PNG, WebP, AVIF, JXL
-/// Supported audio formats: FLAC, Opus, M4A/AAC
-/// Supported video codecs:  H.264, H.265, VP9, AV1  (MKV container only)
-/// Also supports still-frame extraction from video (`onas frame`).
 #[derive(Parser)]
-#[command(name = "onas", version, about, long_about = None)]
+#[command(
+    name = "onas", version, about, long_about = None,
+    arg_required_else_help = true,
+    after_help = "\
+Formats:
+  image  JPEG, PNG, WebP, AVIF, JXL
+  audio  FLAC, Opus, M4A/AAC
+  video  H.264, H.265, VP9, AV1  (MKV container)
+
+Examples:
+  onas image photo.avif photo.webp -q 85
+  onas audio track.flac track.opus
+  onas video in.mp4 out.mkv -v h265 --crf 20
+  onas frame in.mkv thumb.png --at 12.5
+  onas meta song.mp3 --dump"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,

@@ -37,6 +37,13 @@ fn main() {
                     Err(e)   => log::warn!("--json: failed to serialize report: {e}"),
                 }
             }
+            // process::exit() terminates immediately without running
+            // destructors, so a still-buffered stdout (e.g. when not
+            // attached to a real console) can lose the summary line we
+            // just printed above. Flush explicitly so success is never
+            // silent.
+            use std::io::Write;
+            std::io::stdout().flush().ok();
             std::process::exit(exitcode::OK);
         }
         Err(err) => {

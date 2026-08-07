@@ -539,8 +539,7 @@ mod enc_h265 {
                     }};
                 }
 
-                p!("width",     w.to_string().as_str());
-                p!("height",    h.to_string().as_str());
+                p!("input-res", format!("{}x{}", w, h).as_str());
                 p!("fps",       format!("{}/{}", fps_num, fps_den).as_str());
                 p!("crf",       format!("{:.1}", crf).as_str());
                 p!("input-csp", "i420");
@@ -1241,11 +1240,9 @@ mod pipeline {
         keyframe: bool,
         data:     &[u8],
     ) -> Result<()> {
-        // SimpleBlock binary: vint(track) | i16be(relative_ts) | flags(u8) | frame_data
         let ts = pts.min(i16::MAX as i64).max(i16::MIN as i64) as i16;
         let mut flags: u8 = 0x00;
         if keyframe { flags |= 0x80; }
-        // 1-byte vint for tracks 1-126: 0x80 | n
         let track_vint: Vec<u8> = if track < 0x80 {
             vec![(0x80 | track) as u8]
         } else {

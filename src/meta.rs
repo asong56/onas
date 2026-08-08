@@ -55,9 +55,16 @@ fn image_dump(path: &Path) -> Result<()> {
                 .with_context(|| format!("opening {}", path.display()))?;
             match parser.parse_track(ms2) {
                 Ok(track) => {
-                    println!("Duration: {:?}", track.get(nom_exif::TrackInfoTag::DurationMs));
-                    println!("Width:    {:?}", track.get(nom_exif::TrackInfoTag::Width));
-                    println!("Height:   {:?}", track.get(nom_exif::TrackInfoTag::Height));
+                    // EntryValue implements Display; format through that
+                    // instead of {:?} so this prints "1920" rather than
+                    // the doubly-wrapped "Some(U32(1920))".
+                    let field = |tag| match track.get(tag) {
+                        Some(v) => v.to_string(),
+                        None    => "(unknown)".to_string(),
+                    };
+                    println!("Duration: {} ms", field(nom_exif::TrackInfoTag::DurationMs));
+                    println!("Width:    {}",    field(nom_exif::TrackInfoTag::Width));
+                    println!("Height:   {}",    field(nom_exif::TrackInfoTag::Height));
                 }
                 Err(e) => {
                     println!("(no metadata or unsupported format: {e})");
@@ -228,6 +235,84 @@ fn audio_write(path: &Path, sets: &[String], removes: &[String], strip: bool) ->
     Ok(())
 }
 
+// ─── audio: cover art ────────────────────────────────────────────────────────
+// lofty already reads/writes embedded pictures (APIC for ID3v2, METADATA_BLOCK_PICTURE
+// for FLAC/Vorbis Comments, covr for MP4 ilst) — it's the same dependency audio_write
+// above already uses, so this costs nothing extra to turn on.
+
+fn audio_set_cover(path: &Path, image_path: &Path) -> Result<()> {
+    use lofty::{
+        config::WriteOptions,
+        file::{AudioFile, TaggedFileExt},
+        picture::{MimeType, Picture, PictureType},
+        probe::Probe,
+        tag::Tag,
+    };
+
+    let img_bytes = std::fs::read(image_path)
+        .with_context(|| format!("reading {}", image_path.display()))?;
+    let mime = match image_path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png")          => MimeType::Png,
+        Some("jpg" | "jpeg") => MimeType::Jpeg,
+        Some("gif")          => MimeType::Gif,
+        Some("bmp")          => MimeType::Bmp,
+        Some("tif" | "tiff") => MimeType::Tiff,
+        other => MimeType::Unknown(other.unwrap_or("application/octet-stream").to_owned()),
+    };
+
+    let mut tagged = Probe::open(path)
+        .with_context(|| format!("opening {}", path.display()))?
+        .guess_file_type()
+        .context("guess file type")?
+        .read()
+        .context("read file")?;
+
+    let tag_type = tagged.primary_tag_type();
+    if tagged.primary_tag().is_none() {
+        tagged.insert_tag(Tag::new(tag_type));
+    }
+    let tag = tagged.primary_tag_mut().unwrap();
+
+    // Replace any existing front cover instead of stacking duplicates.
+    let existing: Vec<usize> = tag.pictures().iter().enumerate()
+        .filter(|(_, p)| p.pic_type() == PictureType::CoverFront)
+        .map(|(i, _)| i)
+        .collect();
+    for i in existing.into_iter().rev() {
+        tag.remove_picture(i);
+    }
+    tag.push_picture(Picture::new_unchecked(PictureType::CoverFront, Some(mime), None, img_bytes));
+
+    tagged.save_to_path(path, WriteOptions::default()).context("save (cover)")?;
+    println!("Embedded cover: {}", image_path.display());
+    Ok(())
+}
+
+fn audio_extract_cover(path: &Path, out_path: &Path) -> Result<()> {
+    use lofty::{file::TaggedFileExt, picture::PictureType, probe::Probe};
+
+    let tagged = Probe::open(path)
+        .with_context(|| format!("opening {}", path.display()))?
+        .guess_file_type()
+        .context("guess file type")?
+        .read()
+        .context("read file")?;
+
+    let pic = tagged.tags().iter().flat_map(|t| t.pictures())
+        .find(|p| p.pic_type() == PictureType::CoverFront)
+        .or_else(|| tagged.tags().iter().flat_map(|t| t.pictures()).next())
+        .context("no embedded cover picture found")?;
+
+    std::fs::write(out_path, pic.data())
+        .with_context(|| format!("writing {}", out_path.display()))?;
+    println!("Extracted cover ({} bytes) → {}", pic.data().len(), out_path.display());
+    Ok(())
+}
+
 // ─── public entry point ──────────────────────────────────────────────────────
 
 pub fn run(args: MetaArgs) -> Result<()> {
@@ -235,6 +320,18 @@ pub fn run(args: MetaArgs) -> Result<()> {
 
     if args.strip && (!args.set.is_empty() || !args.remove.is_empty()) {
         bail!("--strip cannot be combined with --set or --remove");
+    }
+    if let Some(out) = &args.extract_cover {
+        return match class {
+            Class::Audio => audio_extract_cover(&args.file, out),
+            Class::Image => bail!("--extract-cover is audio-only"),
+        };
+    }
+    if let Some(img) = &args.cover {
+        return match class {
+            Class::Audio => audio_set_cover(&args.file, img),
+            Class::Image => bail!("--cover is audio-only"),
+        };
     }
     let is_read_only = args.dump || (!args.strip && args.set.is_empty() && args.remove.is_empty());
 

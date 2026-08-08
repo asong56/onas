@@ -10,7 +10,7 @@ use std::path::PathBuf;
 Formats:
   image  JPEG, PNG, WebP, AVIF, JXL
   audio  FLAC, Opus, M4A/AAC
-  video  H.264, H.265, VP9, AV1  (MKV container)
+  video  H.264, H.265, VP9, AV1  (MKV or WebM container)
 
 Examples:
   onas image photo.avif photo.webp -q 85
@@ -37,7 +37,7 @@ pub enum Command {
     Image(ImageArgs),
     /// Transcode audio files (FLAC ↔ Opus ↔ M4A)
     Audio(AudioArgs),
-    /// Transcode video files (H.264 ↔ H.265 ↔ VP9 ↔ AV1, MKV container)
+    /// Transcode video files (H.264 ↔ H.265 ↔ VP9 ↔ AV1, MKV/WebM container)
     Video(VideoArgs),
     /// Extract a single still frame from a video as an image (PNG/JPEG)
     Frame(FrameArgs),
@@ -80,7 +80,9 @@ pub enum AudioFmt {
 
 #[derive(Args)]
 pub struct AudioArgs {
-    /// Input file (FLAC, Opus, M4A/AAC, MP3, OGG, WAV, …)
+    /// Input file (FLAC, Opus, M4A/AAC, MP3, OGG, WAV, or an MKV/WebM
+    /// video — its audio track is extracted; codec inside still needs
+    /// to be one Symphonia supports, e.g. not Opus-in-WebM or AC-3)
     pub input: PathBuf,
     /// Output file — extension sets format automatically,
     /// or override with --format
@@ -131,7 +133,7 @@ pub enum FrameFmt {
 
 #[derive(Args)]
 pub struct FrameArgs {
-    /// Input video file (MKV container)
+    /// Input video file (MKV or WebM container)
     pub input: PathBuf,
     /// Output image file — extension determines format unless --format is given
     pub output: PathBuf,
@@ -223,6 +225,14 @@ pub struct MetaArgs {
     /// Strip ALL metadata from the file
     #[arg(long)]
     pub strip: bool,
+
+    /// Embed a cover image (front cover) from this file — audio only
+    #[arg(long, value_name = "IMAGE_PATH")]
+    pub cover: Option<PathBuf>,
+
+    /// Extract the embedded cover image to this file — audio only, read-only
+    #[arg(long, value_name = "OUT_PATH")]
+    pub extract_cover: Option<PathBuf>,
 }
 
 // ─── Video ───────────────────────────────────────────────────────────────────
@@ -251,10 +261,10 @@ pub enum VideoAudioCodec {
 
 #[derive(Args)]
 pub struct VideoArgs {
-    /// Input file (any container FFmpeg can read: MKV, MP4, MOV, AVI, …)
+    /// Input file (MKV or WebM container)
     pub input: PathBuf,
 
-    /// Output file — MUST be .mkv
+    /// Output file — MUST be .mkv or .webm
     pub output: PathBuf,
 
     /// Video codec for output

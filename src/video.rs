@@ -306,20 +306,21 @@ mod dec_vp9 {
     unsafe impl Send for Vp9Dec {}
 
     impl Vp9Dec {
-        pub fn new() -> Result<Self> {
+        /// `vp8 = true` selects the VP8 decoder (used by many .webm files)
+        /// instead of VP9; both share the same generic vpx_codec API.
+        pub fn new(vp8: bool) -> Result<Self> {
             let mut ctx: ffi::vpx_codec_ctx_t = Default::default();
             let abi = unsafe { onas_vpx_decoder_abi_version() };
+            let iface: *mut ffi::vpx_codec_iface_t = if vp8 {
+                unsafe { &raw mut ffi::vpx_codec_vp8_dx_algo as *mut _ }
+            } else {
+                unsafe { &raw mut ffi::vpx_codec_vp9_dx_algo as *mut _ }
+            };
             let err = unsafe {
-                ffi::vpx_codec_dec_init_ver(
-                    &mut ctx,
-                    &raw mut ffi::vpx_codec_vp9_dx_algo as *mut _,
-                    ptr::null(),
-                    0,
-                    abi,
-                )
+                ffi::vpx_codec_dec_init_ver(&mut ctx, iface, ptr::null(), 0, abi)
             };
             if err != 0 {
-                bail_vpx(err, "VP9 decoder init")?;
+                bail_vpx(err, "VP8/VP9 decoder init")?;
             }
             Ok(Self { ctx })
         }
@@ -856,7 +857,9 @@ mod pipeline {
         } else if cid.contains("HEVC") || cid.contains("H265") || cid.contains("hevc") {
             VDec::H265(dec_h265::H265Dec::new().context("H.265 decoder")?)
         } else if cid.contains("VP9") || cid.contains("vp9") {
-            VDec::Vp9(dec_vp9::Vp9Dec::new().context("VP9 decoder")?)
+            VDec::Vp9(dec_vp9::Vp9Dec::new(false).context("VP9 decoder")?)
+        } else if cid.contains("VP8") || cid.contains("vp8") {
+            VDec::Vp9(dec_vp9::Vp9Dec::new(true).context("VP8 decoder")?)
         } else if cid.contains("AV1") || cid.contains("av1") {
             VDec::Av1(dec_av1::Av1Dec::new().context("AV1 decoder")?)
         } else {
@@ -973,7 +976,9 @@ mod pipeline {
             } else if cid.contains("HEVC") || cid.contains("H265") || cid.contains("hevc") {
                 VDec::H265(dec_h265::H265Dec::new().context("H.265 decoder")?)
             } else if cid.contains("VP9") || cid.contains("vp9") {
-                VDec::Vp9(dec_vp9::Vp9Dec::new().context("VP9 decoder")?)
+                VDec::Vp9(dec_vp9::Vp9Dec::new(false).context("VP9 decoder")?)
+            } else if cid.contains("VP8") || cid.contains("vp8") {
+                VDec::Vp9(dec_vp9::Vp9Dec::new(true).context("VP8 decoder")?)
             } else if cid.contains("AV1") || cid.contains("av1") {
                 VDec::Av1(dec_av1::Av1Dec::new().context("AV1 decoder")?)
             } else {
@@ -1240,9 +1245,11 @@ mod pipeline {
         keyframe: bool,
         data:     &[u8],
     ) -> Result<()> {
+        // SimpleBlock binary: vint(track) | i16be(relative_ts) | flags(u8) | frame_data
         let ts = pts.min(i16::MAX as i64).max(i16::MIN as i64) as i16;
         let mut flags: u8 = 0x00;
         if keyframe { flags |= 0x80; }
+        // 1-byte vint for tracks 1-126: 0x80 | n
         let track_vint: Vec<u8> = if track < 0x80 {
             vec![(0x80 | track) as u8]
         } else {

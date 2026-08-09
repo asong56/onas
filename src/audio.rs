@@ -205,7 +205,7 @@ fn decode_opus_via_audiopus(
         if packet.track_id != track_id { continue; }
         if packet.data.starts_with(b"OpusTags") { continue; } // comment packet, not audio
 
-        let n = match decoder.decode_float(Some(&packet.data), &mut pcm, false) {
+        let n = match decoder.decode_float(Some(packet.data.as_ref()), &mut pcm, false) {
             Ok(n) => n,
             Err(e) => { log::warn!("Opus decode error (continuing): {e:?}"); continue; }
         };

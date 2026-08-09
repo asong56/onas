@@ -285,7 +285,12 @@ fn audio_set_cover(path: &Path, image_path: &Path) -> Result<()> {
     for i in existing.into_iter().rev() {
         tag.remove_picture(i);
     }
-    tag.push_picture(Picture::new_unchecked(PictureType::CoverFront, Some(mime), None, img_bytes));
+    tag.push_picture(
+        Picture::unchecked(img_bytes)
+            .pic_type(PictureType::CoverFront)
+            .mime_type(mime)
+            .build(),
+    );
 
     tagged.save_to_path(path, WriteOptions::default()).context("save (cover)")?;
     println!("Embedded cover: {}", image_path.display());

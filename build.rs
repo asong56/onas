@@ -19,32 +19,11 @@ fn link_windows() {
 
     println!("cargo:rustc-link-lib=static=ogg");
 
-    println!("cargo:rustc-link-lib=static=libde265");
-
     println!("cargo:rustc-link-lib=static=FLAC");
-
-    cc::Build::new()
-        .include(base.join("include"))
-        .file("src/vpx_abi_probe.c")
-        .compile("onas_vpx_abi_probe");
 }
 
 fn link_unix() {
-    let lib = pkg_config::Config::new()
-        .cargo_metadata(false)
-        .probe("vpx")
-        .expect("pkg-config could not find vpx");
-
-    let mut build = cc::Build::new();
-    for inc in &lib.include_paths {
-        build.include(inc);
-    }
-    build
-        .file("src/vpx_abi_probe.c")
-        .compile("onas_vpx_abi_probe");
-
     link_via_pkg_config("ogg", "ogg");
-    link_via_pkg_config("libde265", "de265");
     link_via_pkg_config("flac", "FLAC");
 }
 

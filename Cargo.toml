@@ -1,12 +1,12 @@
 [workspace]
-members = [".", "x265-sys"]
+members = ["."]
 resolver = "2"
 
 [package]
 name        = "onas"
 version     = "0.2.0"
 edition     = "2021"
-description = "Image conversion, audio transcoding, and video transcoding CLI"
+description = "Image conversion and audio transcoding CLI"
 license     = "MIT"
 build       = "build.rs"
 
@@ -19,7 +19,6 @@ name = "onas"
 path = "src/main.rs"
 
 [build-dependencies]
-cc         = "1"
 pkg-config = "0.3"
 
 [dependencies]
@@ -56,7 +55,6 @@ lofty      = "0.24"
 
 # ── audio decode (pure Rust) ──────────────────────────────────────────────────
 symphonia  = { version = "0.6", features = ["all"] }
-webm-iterable = "0.6"
 
 # ── audio encode ──────────────────────────────────────────────────────────────
 # Opus: audiopus wraps libopus (vcpkg on Windows, apt on Linux, brew on macOS)
@@ -66,32 +64,6 @@ audiopus   = "0.2"
 flac-bound = { version = "0.5", default-features = false, features = ["libflac-nobuild"] }
 # AAC encode: fdk-aac wraps libfdk-aac (vcpkg on Windows)
 fdk-aac    = "0.8"
-
-# ── video ────────────────────────────────────────────────────────────────────
-# H.264 decode: rust_h264 (pure Rust)
-rust_h264  = "0.4"
-# H.264 encode: x264 (vcpkg x264 on Windows)
-x264       = "0.5"
-# H.265 decode: libde265 (vcpkg libde265 on Windows)
-libde265   = "0.2"
-# H.265 encode: x265-sys (our own FFI, vcpkg x265 on Windows)
-x265-sys   = { path = "x265-sys" }
-# VP9: pin to 04df690 — removes #![feature(cstr_to_str)], avoids missing ffi::VPX_ENCODER_ABI_VERSION in abb717b
-vpx        = { git = "https://github.com/DiamondLovesYou/rust-vpx", rev = "04df690" }
-vpx-sys    = { git = "https://github.com/DiamondLovesYou/rust-vpx", rev = "04df690", package = "libvpx-sys" }
-# AV1 decode: dav1d (already in deps above for AVIF, shared)
-# AV1 encode: rav1e (pure Rust) — svt-av1-sys requires bindgen at build time
-#             which is complex on Windows CI; rav1e is the safe fallback
-rav1e      = { version = "0.8", default-features = false, features = ["threading"] }
-# MKV demux + mux: pure Rust
-matroska   = "0.6"
-
-[patch."https://github.com/DiamondLovesYou/rust-vpx"]
-vpx       = { path = "vendor/vpx" }
-libvpx-sys = { path = "vendor/vpx-sys" }
-
-[patch.crates-io]
-libde265-sys = { path = "vendor/libde265-sys" }
 
 [profile.release]
 opt-level     = "z"
@@ -104,8 +76,4 @@ strip         = "symbols"
 [profile.release.package.dav1d]
 opt-level = 3
 [profile.release.package.ravif]
-opt-level = 3
-[profile.release.package.rav1e]
-opt-level = 3
-[profile.release.package.rust_h264]
 opt-level = 3

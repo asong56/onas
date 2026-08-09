@@ -218,22 +218,30 @@ fn encode_jxl(img: &Rgba8, quality: u8, lossless: bool) -> Result<Vec<u8>> {
     use jpegxl_rs::encode::EncoderSpeed;
     use jpegxl_rs::encoder_builder;
 
+    // Per the jpegxl-rs upstream docs/examples (github.com/inflation/jpegxl-rs):
+    // `lossless` and `quality` are NOT builder methods — `lossless` is a
+    // `Option<bool>` field and `quality` is an `f32` field on the built
+    // `JxlEncoder`, set directly after `.build()`, e.g.:
+    //   let mut encoder = encoder_builder().speed(EncoderSpeed::Falcon).build()?;
+    //   encoder.lossless = Some(false);
+    //   encoder.quality = 3.0;
+    // The previous version of this function called a `.quality(...)`
+    // builder method that doesn't exist in this crate's API and put
+    // libjxl into a bad state ("uses_original_profile" / "incorrect way"
+    // errors) regardless of the lossless flag. Setting both fields
+    // post-build, as upstream does, avoids that entirely.
     let mut builder = encoder_builder();
     builder.has_alpha(true).speed(EncoderSpeed::Squirrel);
-    // Only touch .lossless()/.quality() for the mode actually being used.
-    // Calling .lossless(false) explicitly (rather than just leaving the
-    // builder at its lossy default) has been observed to still leave
-    // libjxl in a state where it expects `uses_original_profile=true`,
-    // which then conflicts with the distance/quality set below and the
-    // encoder rejects the frame ("The encoder API is used in an incorrect
-    // way"). Only calling .lossless(true) for the lossless case — and never
-    // calling .lossless() at all for the lossy case — avoids that path.
-    if lossless {
-        builder.lossless(true);
-    } else {
-        builder.quality((100 - quality as u32) as f32 * 15.0 / 99.0);
-    }
     let mut encoder = builder.build().context("JXL encoder build")?;
+
+    if lossless {
+        encoder.lossless = Some(true);
+    } else {
+        encoder.lossless = Some(false);
+        // JXL "distance" (0 = lossless, ~0.5..15 = increasingly lossy),
+        // mapped from our 1-100 "quality" the same way cjxl's -q does.
+        encoder.quality = (100 - quality as u32) as f32 * 15.0 / 99.0;
+    }
 
     let result = encoder
         .encode::<u8, u8>(&img.data, img.w, img.h)

@@ -112,44 +112,60 @@ fn decode(path: &Path) -> Result<Pcm> {
     // The bundled symphonia has never shipped a native Opus decoder — but
     // libopus is already statically linked in for Opus *encoding* below
     // (`audiopus`), so decode reuses that same already-linked library
-    // instead of pulling in a second Opus implementation. Detected via the
-    // codec id's Debug text rather than a `well_known::CODEC_ID_OPUS`
-    // import, since the exact constant path has moved between symphonia
-    // point releases and this is resilient to that.
-    let is_opus = format!("{:?}", codec_params.codec).to_ascii_lowercase().contains("opus");
+    // instead of pulling in a second Opus implementation.
+    //
+    // Detection: try to build symphonia's own decoder for this track first.
+    // This is intentionally not a name/id match against the codec type —
+    // in current Symphonia versions, `AudioCodecId`'s `Debug` impl prints
+    // only the opaque numeric id (e.g. `AudioCodecId(4097)`), so a string
+    // match against it can never find "opus" and silently never fires.
+    // If symphonia can't build a decoder, fall back to audiopus only when
+    // the file extension says this is actually an Opus file; otherwise
+    // surface the original "no decoder" error so a genuinely unsupported
+    // codec doesn't get misreported as an Opus failure.
+    let native_decoder = symphonia::default::get_codecs()
+        .make_audio_decoder(&codec_params, &AudioDecoderOptions::default());
+
+    let looks_like_opus = path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("opus"))
+        .unwrap_or(false);
 
     let mut samples: Vec<f32> = Vec::new();
-    let (sample_rate, channels) = if is_opus {
-        decode_opus_via_audiopus(&mut *format, track_id, &codec_params, &mut samples)?
-    } else {
-        let sample_rate = codec_params.sample_rate.context("unknown sample rate")?;
-        let channels    = codec_params.channels.as_ref().map(|c| c.count() as u32).unwrap_or(2);
-        let mut decoder = symphonia::default::get_codecs()
-            .make_audio_decoder(&codec_params, &AudioDecoderOptions::default())
-            .with_context(|| format!("no decoder for {:?}", codec_params.codec))?;
+    let (sample_rate, channels) = match native_decoder {
+        Ok(mut decoder) => {
+            let sample_rate = codec_params.sample_rate.context("unknown sample rate")?;
+            let channels    = codec_params.channels.as_ref().map(|c| c.count() as u32).unwrap_or(2);
 
-        loop {
-            let packet = match format.next_packet() {
-                Ok(Some(p)) => p,
-                Ok(None)    => break,
-                Err(e)      => { log::warn!("packet read: {e}"); break; }
-            };
-            if packet.track_id != track_id { continue; }
+            loop {
+                let packet = match format.next_packet() {
+                    Ok(Some(p)) => p,
+                    Ok(None)    => break,
+                    Err(e)      => { log::warn!("packet read: {e}"); break; }
+                };
+                if packet.track_id != track_id { continue; }
 
-            match decoder.decode(&packet) {
-                Ok(buf) => {
-                    let count = buf.samples_interleaved();
-                    let start = samples.len();
-                    samples.resize(start + count, f32::MID);
-                    buf.copy_to_slice_interleaved(&mut samples[start..]);
+                match decoder.decode(&packet) {
+                    Ok(buf) => {
+                        let count = buf.samples_interleaved();
+                        let start = samples.len();
+                        samples.resize(start + count, f32::MID);
+                        buf.copy_to_slice_interleaved(&mut samples[start..]);
+                    }
+                    Err(symphonia::core::errors::Error::DecodeError(e)) => {
+                        log::warn!("decode error (continuing): {e}");
+                    }
+                    Err(e) => { log::warn!("fatal decode: {e}"); break; }
                 }
-                Err(symphonia::core::errors::Error::DecodeError(e)) => {
-                    log::warn!("decode error (continuing): {e}");
-                }
-                Err(e) => { log::warn!("fatal decode: {e}"); break; }
             }
+            (sample_rate, channels)
         }
-        (sample_rate, channels)
+        Err(_) if looks_like_opus => {
+            decode_opus_via_audiopus(&mut *format, track_id, &codec_params, &mut samples)?
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("no decoder for {:?}", codec_params.codec));
+        }
     };
 
     log::info!(

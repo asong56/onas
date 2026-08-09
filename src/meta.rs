@@ -40,16 +40,25 @@ fn image_dump(path: &Path) -> Result<()> {
     let iter = parser.parse_exif(ms);
     match iter {
         Ok(exif_iter) => {
-            let mut found = false;
+            let mut rows: Vec<(String, String)> = Vec::new();
             for entry in exif_iter {
-                println!("{:?}\t{}", entry.tag(), entry.value().unwrap_or(&nom_exif::EntryValue::Text(String::new())));
-                found = true;
+                let value = entry.value()
+                    .map(|v| v.to_string())
+                    .unwrap_or_default();
+                rows.push((format!("{:?}", entry.tag()), value));
             }
-            if !found {
+            if rows.is_empty() {
                 println!("(no EXIF data)");
+            } else {
+                let width = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+                println!("=== EXIF ===");
+                for (k, v) in rows {
+                    println!("{k:width$}  {v}");
+                }
             }
         }
-        Err(_) => {
+        Err(e) => {
+            log::debug!("parse_exif failed: {e}");
             // Try as track/video metadata
             let ms2 = MediaSource::open(path)
                 .with_context(|| format!("opening {}", path.display()))?;
@@ -67,7 +76,8 @@ fn image_dump(path: &Path) -> Result<()> {
                     println!("Height:   {}",    field(nom_exif::TrackInfoTag::Height));
                 }
                 Err(e) => {
-                    println!("(no metadata or unsupported format: {e})");
+                    log::debug!("parse_track failed: {e}");
+                    println!("No metadata found (no EXIF data and no track info in this file).");
                 }
             }
         }
@@ -167,9 +177,35 @@ fn audio_dump(path: &Path) -> Result<()> {
         println!("(no tags)");
     }
     for tag in tagged.tags() {
-        println!("\n=== {:?} ===", tag.tag_type());
-        for item in tag.items() {
-            println!("{:?}\t{:?}", item.key(), item.value());
+        use lofty::prelude::Accessor;
+        println!("\n=== {:?} tags ===", tag.tag_type());
+
+        // Print the common fields as plain text via lofty's Accessor
+        // trait, rather than the raw ItemKey/ItemValue enums — those
+        // Debug-format as e.g. `TrackTitle` / `Text("Song Name")`, which
+        // is Rust internals, not something a person asked to read.
+        let mut common: Vec<(&str, String)> = Vec::new();
+        if let Some(v) = tag.title()   { common.push(("Title",   v.into_owned())); }
+        if let Some(v) = tag.artist()  { common.push(("Artist",  v.into_owned())); }
+        if let Some(v) = tag.album()   { common.push(("Album",   v.into_owned())); }
+        if let Some(v) = tag.genre()   { common.push(("Genre",   v.into_owned())); }
+        if let Some(v) = tag.comment() { common.push(("Comment", v.into_owned())); }
+
+        let width = common.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+        for (k, v) in &common {
+            println!("{k:width$}  {v}");
+        }
+
+        // Anything else present that isn't one of the fields above —
+        // listed by key name only, since there's no reliable way to
+        // pretty-print an arbitrary ItemValue's contents as plain text.
+        let common_keys = ["TrackTitle", "TrackArtist", "AlbumTitle", "Genre", "Comment", "Year", "TrackNumber"];
+        let other: Vec<String> = tag.items()
+            .map(|item| format!("{:?}", item.key()))
+            .filter(|k| !common_keys.contains(&k.as_str()))
+            .collect();
+        if !other.is_empty() {
+            println!("Other fields present: {}", other.join(", "));
         }
     }
     Ok(())

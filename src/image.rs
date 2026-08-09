@@ -219,12 +219,18 @@ fn encode_jxl(img: &Rgba8, quality: u8, lossless: bool) -> Result<Vec<u8>> {
     use jpegxl_rs::encoder_builder;
 
     let mut builder = encoder_builder();
-    builder.has_alpha(true).lossless(lossless).speed(EncoderSpeed::Squirrel);
-    // Only set an explicit distance for lossy output — passing a distance
-    // (even 0.0) alongside .lossless(true) fights libjxl's own
-    // uses_original_profile handling for lossless mode and the encoder
-    // rejects the frame ("The encoder API is used in an incorrect way").
-    if !lossless {
+    builder.has_alpha(true).speed(EncoderSpeed::Squirrel);
+    // Only touch .lossless()/.quality() for the mode actually being used.
+    // Calling .lossless(false) explicitly (rather than just leaving the
+    // builder at its lossy default) has been observed to still leave
+    // libjxl in a state where it expects `uses_original_profile=true`,
+    // which then conflicts with the distance/quality set below and the
+    // encoder rejects the frame ("The encoder API is used in an incorrect
+    // way"). Only calling .lossless(true) for the lossless case — and never
+    // calling .lossless() at all for the lossy case — avoids that path.
+    if lossless {
+        builder.lossless(true);
+    } else {
         builder.quality((100 - quality as u32) as f32 * 15.0 / 99.0);
     }
     let mut encoder = builder.build().context("JXL encoder build")?;

@@ -45,7 +45,7 @@ dav1d      = "0.11"
 jxl-oxide  = "0.12"
 # JXL encode: cmake build of libjxl, works on all 3 platforms
 jpegxl-src = "0.12"
-jpegxl-rs  = { version = "0.11", features = ["vendored"] }
+jpegxl-rs  = { version = "0.12", features = ["vendored"] }
 
 # ── metadata ──────────────────────────────────────────────────────────────────
 # nom-exif 3.x: read-only for images; we use it for EXIF dump

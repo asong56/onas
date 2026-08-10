@@ -218,14 +218,14 @@ fn encode_jxl(img: &Rgba8, quality: u8, lossless: bool) -> Result<Vec<u8>> {
     use jpegxl_rs::encode::EncoderSpeed;
     use jpegxl_rs::encoder_builder;
 
-    // Per the jpegxl-rs upstream docs/examples (github.com/inflation/jpegxl-rs):
-    // `lossless` and `quality` are NOT builder methods — `lossless` is a
-    // `Option<bool>` field and `quality` is an `f32` field on the built
-    // `JxlEncoder`, set directly after `.build()`, e.g.:
+    // Per the jpegxl-rs docs/examples for this crate's pinned version
+    // (0.12, see Cargo.toml) — `lossless` is an `Option<bool>` field and
+    // `quality` is an `f32` field on the built `JxlEncoder`, set directly
+    // after `.build()`:
     //   let mut encoder = encoder_builder().speed(EncoderSpeed::Falcon).build()?;
     //   encoder.lossless = Some(false);
     //   encoder.quality = 3.0;
-    // The previous version of this function called a `.quality(...)`
+    // An earlier version of this function called a `.quality(...)`
     // builder method that doesn't exist in this crate's API and put
     // libjxl into a bad state ("uses_original_profile" / "incorrect way"
     // errors) regardless of the lossless flag. Setting both fields

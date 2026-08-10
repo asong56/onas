@@ -1,24 +1,6 @@
-//! Image conversion: JPEG ↔ PNG ↔ WebP ↔ AVIF ↔ JXL
-//!
-//! Decode path:
-//!   JPEG  → zune-jpeg (pure Rust)
-//!   PNG   → zune-png  (pure Rust)
-//!   WebP  → image crate (pure Rust)
-//!   AVIF  → image crate with `avif` feature (links dav1d via vcpkg)
-//!   JXL   → jxl-oxide (pure Rust)
-//!
-//! Encode path:
-//!   JPEG  → image crate PNG encoder (pure Rust)
-//!   PNG   → image crate (pure Rust)
-//!   WebP  → image crate lossless only (pure Rust; 0.25 has no lossy API)
-//!   AVIF  → ravif (pure Rust rav1e encoder)
-//!   JXL   → jpegxl-rs (libjxl via cmake, handled by jpegxl-src)
-
 use crate::cli::ImageArgs;
 use anyhow::{bail, Context, Result};
 use std::path::Path;
-
-// ─── format detection ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fmt { Jpeg, Png, WebP, Avif, Jxl }
@@ -40,12 +22,10 @@ impl Fmt {
     }
 }
 
-// ─── intermediate: RGBA8 ─────────────────────────────────────────────────────
-
 struct Rgba8 {
     w:    u32,
     h:    u32,
-    data: Vec<u8>, // interleaved RGBA, len = w * h * 4
+    data: Vec<u8>,
 }
 
 impl Rgba8 {
@@ -65,8 +45,6 @@ impl Rgba8 {
         self.data.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect()
     }
 }
-
-// ─── decode ──────────────────────────────────────────────────────────────────
 
 fn decode(path: &Path, fmt: Fmt) -> Result<Rgba8> {
     let bytes = std::fs::read(path)
@@ -153,7 +131,6 @@ fn encode(img: &Rgba8, path: &Path, fmt: Fmt, quality: u8, lossless: bool) -> Re
 }
 
 fn encode_jpeg(img: &Rgba8, quality: u8) -> Result<Vec<u8>> {
-    // image crate JPEG encoder; zune-jpeg 0.4 only has a decoder
     let rgb = image::RgbImage::from_raw(
         img.w, img.h,
         img.rgb(),
@@ -161,7 +138,7 @@ fn encode_jpeg(img: &Rgba8, quality: u8) -> Result<Vec<u8>> {
     let mut out = std::io::Cursor::new(Vec::new());
     rgb.write_to(&mut out, image::ImageFormat::Jpeg)
         .context("JPEG encode")?;
-    let _ = quality; // image 0.25 JPEG encoder uses default quality; quality param reserved
+    let _ = quality;
     Ok(out.into_inner())
 }
 
@@ -175,10 +152,6 @@ fn encode_png(img: &Rgba8) -> Result<Vec<u8>> {
 }
 
 fn encode_webp(img: &Rgba8) -> Result<Vec<u8>> {
-    // image 0.25 WebPEncoder only exposes new_lossless; no lossy API
-    // Validate the buffer matches the declared dimensions before handing
-    // raw bytes to the encoder below (from_raw fails on a size mismatch,
-    // giving a clearer error than the encoder would).
     let _rgba = image::RgbaImage::from_raw(img.w, img.h, img.data.clone())
         .context("WebP: bad pixel buffer")?;
     let mut out = std::io::Cursor::new(Vec::new());
@@ -194,11 +167,6 @@ fn encode_avif(img: &Rgba8, quality: u8) -> Result<Vec<u8>> {
     use ravif::{Encoder, Img, RGBA8};
 
     let ravif_quality = quality as f32;
-    // RGBA8 (rgb::Rgba<u8>) isn't bytemuck::Pod, so it can't be reinterpreted
-    // from raw bytes via cast_slice — build it pixel-by-pixel instead. Its
-    // r/g/b/a fields are public and this layout matches our interleaved
-    // RGBA buffer exactly, so this is just a struct-literal copy, not a
-    // format conversion.
     let pixels: Vec<RGBA8> = img.data
         .chunks_exact(4)
         .map(|p| RGBA8 { r: p[0], g: p[1], b: p[2], a: p[3] })
@@ -218,28 +186,16 @@ fn encode_jxl(img: &Rgba8, quality: u8, lossless: bool) -> Result<Vec<u8>> {
     use jpegxl_rs::encode::EncoderSpeed;
     use jpegxl_rs::encoder_builder;
 
-    // Per the jpegxl-rs docs/examples for this crate's pinned version
-    // (0.12, see Cargo.toml) — `lossless` is an `Option<bool>` field and
-    // `quality` is an `f32` field on the built `JxlEncoder`, set directly
-    // after `.build()`:
-    //   let mut encoder = encoder_builder().speed(EncoderSpeed::Falcon).build()?;
-    //   encoder.lossless = Some(false);
-    //   encoder.quality = 3.0;
-    // An earlier version of this function called a `.quality(...)`
-    // builder method that doesn't exist in this crate's API and put
-    // libjxl into a bad state ("uses_original_profile" / "incorrect way"
-    // errors) regardless of the lossless flag. Setting both fields
-    // post-build, as upstream does, avoids that entirely.
-    let mut builder = encoder_builder();
-    builder.has_alpha(true).speed(EncoderSpeed::Squirrel);
-    let mut encoder = builder.build().context("JXL encoder build")?;
+    let mut encoder = encoder_builder()
+        .has_alpha(true)
+        .speed(EncoderSpeed::Squirrel)
+        .build()
+        .context("JXL encoder build")?;
 
     if lossless {
         encoder.lossless = Some(true);
     } else {
         encoder.lossless = Some(false);
-        // JXL "distance" (0 = lossless, ~0.5..15 = increasingly lossy),
-        // mapped from our 1-100 "quality" the same way cjxl's -q does.
         encoder.quality = (100 - quality as u32) as f32 * 15.0 / 99.0;
     }
 
@@ -249,8 +205,6 @@ fn encode_jxl(img: &Rgba8, quality: u8, lossless: bool) -> Result<Vec<u8>> {
 
     Ok(result.data)
 }
-
-// ─── resize helper ───────────────────────────────────────────────────────────
 
 fn parse_resize(s: &str) -> Result<(u32, u32)> {
     let parts: Vec<&str> = s.splitn(2, 'x').collect();
@@ -265,18 +219,6 @@ fn parse_resize(s: &str) -> Result<(u32, u32)> {
     Ok((w, h))
 }
 
-// ─── public API for other modules / library consumers ────────────────────────
-
-/// Encode raw interleaved RGBA8 pixels (`data.len() == w * h * 4`) straight
-/// to an image file in the given format, with an optional resize applied
-/// first (0 in either dimension keeps aspect ratio, matching `--resize`).
-///
-/// This skips the decode half of [`run`] entirely, so callers that already
-/// have pixels in memory — e.g. a library consumer with its own pixel
-/// source — don't need to round-trip through a temporary file. `fmt` is
-/// taken explicitly (rather than inferred from `path`) so callers can
-/// honor an explicit `--format` override even when it disagrees with the
-/// output extension, same as [`run`] does via [`ImageArgs`].
 pub fn encode_rgba8_to_file(
     data: &[u8],
     w: u32,
@@ -300,18 +242,12 @@ pub fn encode_rgba8_to_file(
     encode(&img, path, fmt, quality, lossless)
 }
 
-// ─── public entry point ──────────────────────────────────────────────────────
-
 pub fn run(args: ImageArgs) -> Result<()> {
     let (w, h) = run_capture(args)?;
-    let _ = (w, h); // run_capture already printed the summary line
+    let _ = (w, h);
     Ok(())
 }
 
-/// Same conversion as [`run`], but returns the output dimensions instead
-/// of only printing them — used by [`crate::run_image`] (the library
-/// entry point) and by `--json` CLI output, both of which need the
-/// values programmatically rather than parsed back out of stdout text.
 pub fn run_capture(args: ImageArgs) -> Result<(u32, u32)> {
     let src_fmt = Fmt::from_path(&args.input)?;
     let dst_fmt = Fmt::from_path(&args.output)?;
